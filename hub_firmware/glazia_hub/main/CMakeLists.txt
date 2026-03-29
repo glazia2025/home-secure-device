@@ -1,0 +1,24 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "button.c"
+        "ble.c"
+        "wifi.c"
+        "api_client.c"
+        "websocket.c"
+        "espnow.c"
+        "display.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        bt
+        json
+        esp_http_client
+        espressif__esp_websocket_client
+        driver
+        spi_flash
+        log
+)
