@@ -8,6 +8,7 @@ idf_component_register(
         "websocket.c"
         "espnow.c"
         "display.c"
+        "nvs_storage.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash

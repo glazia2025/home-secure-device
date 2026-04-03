@@ -1,5 +1,6 @@
 #include "wifi.h"
 #include "state.h"
+#include "api_client.h"
 #include "display.h"
 #include "espnow.h"
 
@@ -30,7 +31,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         if (s_retry_num < WIFI_MAX_RETRIES) {
             s_retry_num++;
             ESP_LOGW(TAG, "Disconnected — retry %d/%d", s_retry_num, WIFI_MAX_RETRIES);
-            vTaskDelay(pdMS_TO_TICKS(1000)); // 1-second backoff before retrying
+            vTaskDelay(pdMS_TO_TICKS(1000));
             esp_wifi_connect();
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
@@ -66,7 +67,6 @@ void wifi_connect(const char *ssid, const char *password)
     strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
     strncpy((char *)wifi_cfg.sta.password, password, sizeof(wifi_cfg.sta.password) - 1);
 
-    // Only enforce WPA2 if password is provided
     if (strlen(password) > 0) {
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     }
@@ -74,43 +74,37 @@ void wifi_connect(const char *ssid, const char *password)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
 
-    // ─── THE CRITICAL POWER FIX ──────────────────────────────────────────
-    // 1. Give the hardware's voltage regulator time to stabilize
-    //    after the massive current swing of shutting down BLE.
-    ESP_LOGI(TAG, "Resting voltage regulator before WiFi start...");
+    // RESTING DELAY: Allows voltage regulator to recover from BLE shutdown
     vTaskDelay(pdMS_TO_TICKS(1500));
 
-    // 2. Start the radio
     esp_wifi_start();
 
-    // 3. Immediately apply the proven TX power limit from your old project
-    //    (56 * 0.25dBm = 14dBm) to prevent USB brownouts during AP negotiation.
+    // TX POWER LIMIT: Constrains peak current to prevent USB disconnects
     esp_wifi_set_max_tx_power(56);
-    // ─────────────────────────────────────────────────────────────────────
 
-    // Wait for connection result
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to AP successfully!");
-        display_show("WiFi Connected", "Registering...");
-        g_mode = MODE_OPERATIONAL; // Or whatever your state logic requires
 
-        // Init ESP-NOW now that the WiFi hardware is active and stable
         espnow_init();
 
-        // -------------------------------------------------------------
-        // TODO: Call your backend API registration function here!
-        // api_client_register_hub();
-        // -------------------------------------------------------------
+        if (strlen(g_hub_secret) > 0) {
+            // Already registered (loaded from NVS on reboot) — skip re-registration
+            g_mode = MODE_OPERATIONAL;
+            display_show("Hub Ready!", g_home_name);
+            ESP_LOGI(TAG, "Already registered, going operational");
+        } else {
+            // First time — register with server
+            display_show("WiFi Connected", "Registering...");
+            api_register_hub();
+        }
 
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGE(TAG, "Failed to connect to SSID: %s", ssid);
         display_show("WiFi Error", "Check credentials");
-
-        // Wait a moment so the user can read the error, then reboot safely
         vTaskDelay(pdMS_TO_TICKS(3000));
         esp_restart();
     }
