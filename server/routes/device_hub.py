@@ -4,7 +4,7 @@ import time
 import uuid
 import secrets
 import json
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Header
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Header, Query
 from typing import Optional
 from models import HubRegisterRequest, HubEventRequest, SensorAcknowledgeRequest
 from auth_helper import verify_device_key, DEVICE_API_KEY
@@ -12,7 +12,7 @@ import store
 
 router = APIRouter(prefix="/api/device/hubs", tags=["Device - Hub"])
 
-PAIRING_WINDOW_SECONDS = 60
+PAIRING_WINDOW_SECONDS = 120    # 2 min — matches hub's SENSOR_PAIR_TIMEOUT_MS
 
 
 # ── Hub Registration ─────────────────────────────────────────────────────────
@@ -209,8 +209,8 @@ def acknowledge_sensor(
 @router.websocket("/ws")
 async def hub_websocket(
     websocket: WebSocket,
-    x_hub_mac_address: Optional[str] = Header(None),
-    x_hub_secret: Optional[str] = Header(None),
+    mac:    Optional[str] = Query(None),   # hub sends as ?mac=...&secret=...
+    secret: Optional[str] = Query(None),
 ):
     """
     Hub connects here after entering sensor pairing mode.
@@ -218,10 +218,10 @@ async def hub_websocket(
     When a sensor is paired (via POST /sensors/pair),
     we instantly push the sensor MAC through this socket.
     """
-    mac = (x_hub_mac_address or "").upper()
+    mac = (mac or "").upper()
     hub = store.hubs.get(mac)
 
-    if not hub or hub["secret"] != x_hub_secret:
+    if not hub or hub["secret"] != secret:
         await websocket.close(code=4003, reason="Unauthorized")
         return
 

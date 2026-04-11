@@ -1,0 +1,4 @@
+# LVGL — enabled fonts and display settings
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_COLOR_16_SWAP=y
