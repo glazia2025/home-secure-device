@@ -1,9 +1,9 @@
 #include "wifi.h"
 #include "state.h"
 #include "api_client.h"
-#include "websocket.h"
 #include "display.h"
 #include "espnow.h"
+#include "nvs_storage.h"
 
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -16,13 +16,12 @@
 
 static const char *TAG = "WIFI";
 
-/* Persistent — never deleted so the handler stays valid after initial connect */
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
-static int  s_retry_num      = 0;
-static bool s_initial_connect = true;   /* true until first successful connection */
+static int  s_retry_num       = 0;
+static bool s_initial_connect = true;
 #define WIFI_MAX_RETRIES 10
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -36,10 +35,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGW(TAG, "WiFi dropped — retry %d", s_retry_num);
 
         if (s_initial_connect && s_retry_num >= WIFI_MAX_RETRIES) {
-            /* First-time connect failed too many times — give up */
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         } else {
-            /* Always retry after initial connect — never give up mid-operation */
             vTaskDelay(pdMS_TO_TICKS(1500));
             esp_wifi_connect();
             if (!s_initial_connect) {
@@ -53,12 +50,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
-        /* If WiFi recovered mid-operation during sensor pairing — reopen window */
-        if (!s_initial_connect && g_mode == MODE_SENSOR_PAIRING) {
-            ESP_LOGI(TAG, "WiFi back — reopening sensor pairing window");
-            display_show("WiFi back", "Resuming pairing");
-            api_enable_sensor_pairing();
-            websocket_start();
+        if (!s_initial_connect) {
+            // WiFi recovered mid-operation.
+            // If there is an unfinished sensor pairing in provisional NVS, retry it.
+            char prov_mac[18] = {0}, prov_key[33] = {0};
+            if (nvs_prov_load_sensor(prov_mac, prov_key)) {
+                ESP_LOGI(TAG, "WiFi back — resuming provisional sensor pairing for %s", prov_mac);
+                display_show("WiFi back", "Resuming pair");
+                espnow_pair_sensor(prov_mac, prov_key);
+            } else {
+                display_show("WiFi back", "Reconnected");
+            }
         }
     }
 }
@@ -83,7 +85,7 @@ void wifi_connect(const char *ssid, const char *password)
                                         &wifi_event_handler, NULL, NULL);
 
     wifi_config_t wifi_cfg = {0};
-    strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
+    strncpy((char *)wifi_cfg.sta.ssid,     ssid,     sizeof(wifi_cfg.sta.ssid)     - 1);
     strncpy((char *)wifi_cfg.sta.password, password, sizeof(wifi_cfg.sta.password) - 1);
 
     if (strlen(password) > 0) {
@@ -93,26 +95,24 @@ void wifi_connect(const char *ssid, const char *password)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
 
-    // RESTING DELAY: Allows voltage regulator to recover from BLE shutdown
+    // Brief delay: lets voltage regulator recover from BLE shutdown
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     esp_wifi_start();
-
-    // TX POWER LIMIT: Constrains peak current to prevent USB disconnects
-    esp_wifi_set_max_tx_power(56);
+    esp_wifi_set_max_tx_power(56);   // limit peak current on USB
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to AP successfully!");
-        s_initial_connect = false;   /* from here on, always retry on drop */
+        ESP_LOGI(TAG, "Connected to AP!");
+        s_initial_connect = false;
 
         espnow_init();
 
         if (strlen(g_hub_secret) > 0) {
-            // Already registered (loaded from NVS on reboot) — skip re-registration
+            // Already registered — go operational and restore saved sensors
             g_mode = MODE_OPERATIONAL;
             if (strlen(g_user_name) > 0) {
                 display_show(g_home_name, g_user_name);
@@ -120,11 +120,17 @@ void wifi_connect(const char *ssid, const char *password)
                 display_show("Hub Ready!", g_home_name);
             }
             ESP_LOGI(TAG, "Already registered, going operational");
-
-            // Restore ESP-NOW links to any previously paired sensors
             espnow_reconnect_saved_sensors();
+
+            // Also check if a sensor pairing was interrupted (provisional NVS)
+            char prov_mac[18] = {0}, prov_key[33] = {0};
+            if (nvs_prov_load_sensor(prov_mac, prov_key)) {
+                ESP_LOGI(TAG, "Found interrupted sensor pairing — resuming for %s", prov_mac);
+                display_show("Resuming pair", prov_mac);
+                espnow_pair_sensor(prov_mac, prov_key);
+            }
         } else {
-            // First time — register with server
+            // First boot — register with server
             display_show("WiFi Connected", "Registering...");
             api_register_hub();
         }
@@ -135,6 +141,4 @@ void wifi_connect(const char *ssid, const char *password)
         vTaskDelay(pdMS_TO_TICKS(3000));
         esp_restart();
     }
-
-    /* Do NOT delete s_wifi_event_group — handler uses it on future disconnects */
 }

@@ -1,0 +1,14 @@
+dependencies:
+  idf: ">=5.0.0"
+
+  # LVGL graphics library (8.3.x)
+  lvgl/lvgl:
+    version: "^8.3.0"
+
+  # Espressif's ready-made LVGL ↔ esp_lcd glue (handles task, timer, flush)
+  espressif/esp_lvgl_port:
+    version: "^1.4.0"
+
+  # ILI9341 panel driver (2.8" KMRTM28028-SPI)
+  espressif/esp_lcd_ili9341:
+    version: "^1.0.0"

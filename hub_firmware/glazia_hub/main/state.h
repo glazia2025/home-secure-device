@@ -22,13 +22,21 @@ extern char g_home_id[64];
 extern char g_home_name[64];
 extern char g_user_name[64];
 
+// Pending sensor pairing — populated by api_fetch_sensor_pairing(), consumed by espnow
+extern char g_pending_sensor_mac[18];    // e.g. "AA:BB:CC:DD:EE:FF"
+extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
+
 // ── Server Config ─────────────────────────────────────────────────────────
-#define SERVER_IP      "10.245.180.6"
+#define SERVER_IP      "10.208.134.6"
 #define SERVER_PORT    3000
-#define SERVER_BASE    "http://10.245.180.6:3000"
-#define WS_URI         "ws://10.245.180.6:3000/api/device/hubs/ws"
+#define SERVER_BASE    "http://10.208.134.6:3000"
 #define DEVICE_API_KEY "glazia-device-dev-key"
 #define BLE_DEVICE_NAME "GlaziaHub"
+
+// ── ESP-NOW Security ──────────────────────────────────────────────────────
+// PMK: 16-byte Primary Master Key — must match on hub and all sensors.
+// The per-sensor LMK (provision_key) is delivered out-of-band (BLE→server→HTTP).
+#define GLAZIA_ESP_NOW_PMK  "glz!dev.pmk.2024"   // exactly 16 bytes
 
 // ── ESP32-S3 GPIO PINS ────────────────────────────────────────────────────
 #define BUTTON_GPIO   21   // General purpose GPIO, safe on ESP32-S3-N16R8

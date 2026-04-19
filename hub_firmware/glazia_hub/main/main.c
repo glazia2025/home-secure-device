@@ -15,6 +15,8 @@ static const char *TAG = "MAIN";
 hub_mode_t g_mode = MODE_IDLE;
 char g_wifi_ssid[64] = {0}, g_wifi_password[64] = {0}, g_provisioning_token[64] = {0};
 char g_hub_mac[18] = {0}, g_hub_secret[128] = {0}, g_home_id[64] = {0}, g_home_name[64] = {0}, g_user_name[64] = {0};
+char g_pending_sensor_mac[18] = {0};
+char g_pending_provision_key[33] = {0};
 
 void app_main(void) {
     esp_err_t ret = nvs_flash_init();

@@ -5,7 +5,6 @@ idf_component_register(
         "ble.c"
         "wifi.c"
         "api_client.c"
-        "websocket.c"
         "espnow.c"
         "display.c"
         "nvs_storage.c"
@@ -18,7 +17,6 @@ idf_component_register(
         bt
         json
         esp_http_client
-        espressif__esp_websocket_client
         driver
         spi_flash
         log

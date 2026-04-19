@@ -1,0 +1,33 @@
+# --- Custom Exceptions ---
+# Ignore all Markdown files...
+*.md
+# ...except these specific ones
+!README.md
+!LOG.md
+
+# --- Folders ---
+# Ignore the agents folder (as requested)
+/agents/
+
+# --- ESP-IDF / Embedded Build Artifacts ---
+# Ignore all 'build' folders anywhere in the project
+**/build/
+# Ignore SDK configuration files (usually auto-generated/managed)
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults
+# Ignore lock files if you don't want to pin component versions
+dependencies.lock
+
+# --- Python Clutter ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# --- OS / IDE Specific ---
+.DS_Store
+.vscode/
+.idea/

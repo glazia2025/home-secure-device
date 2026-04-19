@@ -1,16 +1,14 @@
 /**
- * C6 Display Slave
- * ─────────────────
- * Fixed LVGL layout for Glazia Hub:
- *   - "Glazia Hub" title
- *   - Status box (updatable)
- *   - Critical toggle button (pink)
- *   - 4 sensor boxes with rounded corners (empty for now)
+ * C6 Display Slave — EEZ Studio UI
+ * ──────────────────────────────────
+ * UI is defined in ui/ (EEZ-generated). Layout:
+ *   - Header panel  "Glazia Hub"
+ *   - Status panel  (receives log text from S3 over UART)
+ *   - Critical button (display-only, no interaction)
  *
  * UART command protocol (newline-terminated, 115200 baud):
- *   STATUS:line1|line2     update status box, | = newline
- *   FILL:R,G,B             fill screen with colour (debug)
- *   CLEAR                  black screen (debug)
+ *   STATUS:line1|line2     update status panel, | = newline
+ *   CLEAR                  reset status to "..."
  */
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +23,10 @@
 #include "esp_lcd_ili9341.h"
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
+
+// EEZ-generated UI
+#include "ui/ui.h"
+#include "ui/screens.h"
 
 static const char *TAG = "c6_display";
 
@@ -54,9 +56,6 @@ static const char *TAG = "c6_display";
 static esp_lcd_panel_io_handle_t io_handle;
 static esp_lcd_panel_handle_t    panel_handle;
 static lv_disp_t                *disp;
-
-/* ── Updatable widget references ─────────────────────────────────────────── */
-static lv_obj_t *status_label = NULL;
 
 /* ── LCD init ────────────────────────────────────────────────────────────── */
 static void lcd_init(void)
@@ -120,83 +119,37 @@ static void lvgl_init(void)
     disp = lvgl_port_add_disp(&disp_cfg);
 }
 
-/* ── Build fixed layout ──────────────────────────────────────────────────── */
-static void build_layout(void)
+/* ── EEZ UI init ─────────────────────────────────────────────────────────── */
+static void ui_build(void)
 {
     lvgl_port_lock(0);
-
-    lv_obj_t *scr = lv_disp_get_scr_act(disp);
-    lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(scr, 0, LV_PART_MAIN);
-
-    // ── Title ─────────────────────────────────────────────────────────
-    lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "Glazia Hub");
-    lv_obj_set_style_text_color(title, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
-
-    // ── Status box ────────────────────────────────────────────────────
-    lv_obj_t *status_box = lv_obj_create(scr);
-    lv_obj_set_pos(status_box, 10, 48);
-    lv_obj_set_size(status_box, 220, 88);
-    lv_obj_set_style_bg_color(status_box, lv_color_make(18, 18, 18), LV_PART_MAIN);
-    lv_obj_set_style_border_color(status_box, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_border_width(status_box, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(status_box, 6, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(status_box, 8, LV_PART_MAIN);
-    lv_obj_clear_flag(status_box, LV_OBJ_FLAG_SCROLLABLE);
-
-    status_label = lv_label_create(status_box);
-    lv_label_set_text(status_label, "Starting...");
-    lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(status_label, 204);
-    lv_obj_set_style_text_color(status_label, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(status_label, LV_ALIGN_CENTER, 0, 0);
-
-    // ── Critical toggle button (pink) ─────────────────────────────────
-    lv_obj_t *crit_btn = lv_obj_create(scr);
-    lv_obj_set_pos(crit_btn, 10, 148);
-    lv_obj_set_size(crit_btn, 220, 30);
-    lv_obj_set_style_bg_color(crit_btn, lv_color_make(255, 160, 160), LV_PART_MAIN);
-    lv_obj_set_style_border_width(crit_btn, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(crit_btn, 6, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(crit_btn, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(crit_btn, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *crit_lbl = lv_label_create(crit_btn);
-    lv_label_set_text(crit_lbl, "Critical Toggle");
-    lv_obj_set_style_text_color(crit_lbl, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(crit_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(crit_lbl, LV_ALIGN_CENTER, 0, 0);
-
-    // ── Sensor boxes (2x2 grid, rounded corners, empty) ───────────────
-    // x: 10, 130  y: 190, 258   size: 100x60   radius: 10
-    const int bx[4] = {10, 130, 10, 130};
-    const int by[4] = {190, 190, 258, 258};
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *box = lv_obj_create(scr);
-        lv_obj_set_pos(box, bx[i], by[i]);
-        lv_obj_set_size(box, 100, 60);
-        lv_obj_set_style_bg_color(box, lv_color_make(22, 22, 22), LV_PART_MAIN);
-        lv_obj_set_style_border_color(box, lv_color_make(70, 70, 70), LV_PART_MAIN);
-        lv_obj_set_style_border_width(box, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(box, 10, LV_PART_MAIN);
-        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-    }
-
+    ui_init();              // initialise EEZ flow engine with asset blob
+    create_screens();       // build LVGL widget tree from screens.c
+    lv_scr_load(objects.main);
     lvgl_port_unlock();
-    ESP_LOGI(TAG, "Layout built");
+
+    ESP_LOGI(TAG, "EEZ UI loaded — status_label=%p", (void *)objects.status_label);
+}
+
+/* ── EEZ tick task ───────────────────────────────────────────────────────── */
+// Drives eez_flow_tick() (no-op for a static UI, but keeps the flow engine
+// alive for future data-binding / action work).
+static void ui_tick_task(void *arg)
+{
+    while (1) {
+        lvgl_port_lock(0);
+        ui_tick();
+        lvgl_port_unlock();
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 
 /* ── Command handlers ────────────────────────────────────────────────────── */
 
-// STATUS:line1|line2  — update the status box, | becomes newline
+// STATUS:line1|line2  — update the status panel, | becomes newline
 static void cmd_status(const char *msg)
 {
-    if (!status_label) return;
+    if (!objects.status_label) return;
 
     char text[128] = {0};
     strncpy(text, msg, sizeof(text) - 1);
@@ -205,16 +158,8 @@ static void cmd_status(const char *msg)
     }
 
     lvgl_port_lock(0);
-    lv_label_set_text(status_label, text);
-    lv_obj_align(status_label, LV_ALIGN_CENTER, 0, 0);
-    lvgl_port_unlock();
-}
-
-static void cmd_fill(uint8_t r, uint8_t g, uint8_t b)
-{
-    lvgl_port_lock(0);
-    lv_obj_t *scr = lv_disp_get_scr_act(disp);
-    lv_obj_set_style_bg_color(scr, lv_color_make(r, g, b), LV_PART_MAIN);
+    lv_label_set_text(objects.status_label, text);
+    lv_obj_align(objects.status_label, LV_ALIGN_TOP_LEFT, 0, 0);
     lvgl_port_unlock();
 }
 
@@ -225,10 +170,6 @@ static void handle_command(char *line)
 
     if (strncmp(line, "STATUS:", 7) == 0) {
         cmd_status(line + 7);
-    } else if (strncmp(line, "FILL:", 5) == 0) {
-        int r = 0, g = 0, b = 0;
-        sscanf(line + 5, "%d,%d,%d", &r, &g, &b);
-        cmd_fill((uint8_t)r, (uint8_t)g, (uint8_t)b);
     } else if (strcmp(line, "CLEAR") == 0) {
         cmd_status("...");
     } else {
@@ -239,8 +180,8 @@ static void handle_command(char *line)
 /* ── UART receiver task ──────────────────────────────────────────────────── */
 static void uart_task(void *arg)
 {
-    char buf[256];
-    int  pos = 0;
+    char    buf[256];
+    int     pos = 0;
     uint8_t ch;
 
     while (1) {
@@ -270,7 +211,7 @@ static void uart_alive_task(void *arg)
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "C6 display slave starting");
+    ESP_LOGI(TAG, "C6 display slave starting (EEZ UI)");
 
     lcd_init();
     lvgl_init();
@@ -287,8 +228,9 @@ void app_main(void)
     ESP_ERROR_CHECK(uart_set_pin(UART_PORT, UART_TX_PIN, UART_RX_PIN,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    build_layout();
+    ui_build();
 
+    xTaskCreate(ui_tick_task,    "ui_tick",  4096, NULL, 3, NULL);
     xTaskCreate(uart_task,       "uart_rx",  4096, NULL, 5, NULL);
     xTaskCreate(uart_alive_task, "uart_tx",  2048, NULL, 4, NULL);
 

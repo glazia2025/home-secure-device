@@ -1,0 +1,218 @@
+================================================================================
+  TFT DISPLAY SETUP — ILI9341 (KMRTM28028-SPI) via ESP32-C6, controlled by S3
+================================================================================
+
+HARDWARE
+--------
+  Display : KMRTM28028-SPI  (ILI9341 driver, 2.8", 240x320, SPI)
+  Driver  : ESP32-C6 (Glyph, PCBCupid)  — renders to TFT over SPI
+  Master  : ESP32-S3-N16R8              — sends display commands over UART
+
+
+--------------------------------------------------------------------------------
+  1. TFT → ESP32-C6 CONNECTIONS
+--------------------------------------------------------------------------------
+
+  TFT Pin     C6 GPIO   Notes
+  ─────────   ───────   ──────────────────────────────────────
+  VCC         3.3V      power
+  GND         GND
+  CS          GPIO18
+  RESET       GPIO19
+  D/C         GPIO20
+  SDI (MOSI)  GPIO7
+  SCK         GPIO6
+  LED         3.3V      backlight always on
+  SDO (MISO)  not connected  (not needed for write-only)
+
+  Touch pins (T_CLK, T_CS, T_DIN, T_OUT, T_IRQ) — not connected / not used.
+
+
+--------------------------------------------------------------------------------
+  2. ESP32-S3 → ESP32-C6 UART CONNECTIONS
+--------------------------------------------------------------------------------
+
+  S3 Pin    Direction   C6 Pin    Notes
+  ───────   ─────────   ───────   ──────────────────────────────────────────
+  GPIO17    TX →        GPIO9     S3 transmits commands, C6 receives
+  GPIO18    RX ←        GPIO14    C6 sends ALIVE heartbeat, S3 can receive
+  GND       —           GND       MUST be common ground
+
+  Power: both boards powered independently via their own USB cables.
+  (Alternatively C6 can be powered from S3's 5V/VIN pin → C6 VIN.)
+
+
+--------------------------------------------------------------------------------
+  3. C6 FIRMWARE — tft_test project  (ESP-IDF, target: esp32c6)
+--------------------------------------------------------------------------------
+
+  Path: sesnor_test/tft_test/
+
+  Key dependencies  (main/idf_component.yml):
+    lvgl/lvgl               ^8.3.0
+    espressif/esp_lvgl_port ^1.4.0
+    espressif/esp_lcd_ili9341 ^1.0.0
+
+  sdkconfig.defaults:
+    CONFIG_LV_FONT_MONTSERRAT_14=y
+    CONFIG_LV_FONT_MONTSERRAT_24=y
+    CONFIG_LV_COLOR_16_SWAP=y
+
+  lv_conf.h must live at:  managed_components/lv_conf.h
+  (not in main/ — LVGL only finds it via managed_components/)
+
+  Pin defines (main/tft_test.c):
+    #define PIN_CS    18
+    #define PIN_RST   19
+    #define PIN_DC    20
+    #define PIN_MOSI   7
+    #define PIN_SCK    6
+
+    #define UART_PORT   UART_NUM_1
+    #define UART_RX_PIN  9    // receives commands from S3
+    #define UART_TX_PIN 14    // sends ALIVE heartbeat to S3
+
+  LCD init notes:
+    - SPI host : SPI2_HOST, 10 MHz
+    - Color    : BGR endian, 16-bit
+    - Mirror   : esp_lcd_panel_mirror(panel_handle, true, false)  ← fixes horizontal flip
+    - Invert   : false
+
+  UART command protocol (newline-terminated, 115200 baud):
+    FILL:R,G,B      fill screen with solid colour  (0-255 each component)
+    TEXT:message    black screen, centred white text (Montserrat 24)
+    CLEAR           black screen, no text
+
+  Relevant C6 code snippets:
+
+    // fill screen
+    static void cmd_fill(uint8_t r, uint8_t g, uint8_t b) {
+        lvgl_port_lock(0);
+        lv_obj_t *scr = lv_disp_get_scr_act(disp);
+        lv_obj_clean(scr);
+        lv_obj_set_style_bg_color(scr, lv_color_make(r, g, b), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+        lvgl_port_unlock();
+    }
+
+    // show text
+    static void cmd_text(const char *msg) {
+        lvgl_port_lock(0);
+        lv_obj_t *scr = lv_disp_get_scr_act(disp);
+        lv_obj_clean(scr);
+        lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_t *label = lv_label_create(scr);
+        lv_label_set_text(label, msg);
+        lv_obj_set_style_text_color(label, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_24, LV_PART_MAIN);
+        lv_obj_center(label);
+        lvgl_port_unlock();
+    }
+
+    // command parser
+    static void handle_command(char *line) {
+        if (strncmp(line, "FILL:", 5) == 0) {
+            int r = 0, g = 0, b = 0;
+            sscanf(line + 5, "%d,%d,%d", &r, &g, &b);
+            cmd_fill((uint8_t)r, (uint8_t)g, (uint8_t)b);
+        } else if (strncmp(line, "TEXT:", 5) == 0) {
+            cmd_text(line + 5);
+        } else if (strcmp(line, "CLEAR") == 0) {
+            cmd_fill(0, 0, 0);
+        }
+    }
+
+
+--------------------------------------------------------------------------------
+  4. S3 FIRMWARE — s3_display_ctrl project  (ESP-IDF, target: esp32s3)
+--------------------------------------------------------------------------------
+
+  Path: sesnor_test/s3_display_ctrl/
+
+  Pin defines (main/s3_display_ctrl.c):
+    #define UART_PORT   UART_NUM_1
+    #define UART_TX_PIN 17    // S3 GPIO17 = U1TXD
+    #define UART_RX_PIN 18    // S3 GPIO18 = U1RXD
+
+  UART config: 115200 baud, 8N1, no flow control.
+
+  Helper used to send a command:
+    static void send_cmd(const char *cmd) {
+        uart_write_bytes(UART_PORT, cmd, strlen(cmd));
+        uart_write_bytes(UART_PORT, "\n", 1);
+    }
+
+  Demo loop:
+    send_cmd("FILL:255,0,0");       // red
+    send_cmd("FILL:0,255,0");       // green
+    send_cmd("FILL:0,0,255");       // blue
+    send_cmd("TEXT:xio is great");  // text on black
+    send_cmd("CLEAR");              // black
+
+
+--------------------------------------------------------------------------------
+  5. GOTCHAS & NOTES
+--------------------------------------------------------------------------------
+
+  - lv_conf.h goes in managed_components/, NOT main/. LVGL won't find it otherwise.
+  - esp_lcd_ili9341 is NOT built into IDF 5.x — must add as managed component.
+  - Mirror is required (true, false) or text/image appears horizontally flipped.
+  - GND must be shared between S3 and C6 or UART will never work.
+  - GPIO3 on S3 is a strapping pin (JTAG) — avoid using it for DC/CS/etc.
+  - C6 GPIO9 is the boot button on the Glyph board — it works fine as UART RX
+    in normal operation but don't hold it low at boot.
+
+
+================================================================================
+  FOR THE NEXT CODER — using this TFT from a different S3 project
+================================================================================
+
+  The C6 is already wired to the TFT and runs the tft_test firmware permanently.
+  You do NOT touch the C6 or its firmware. It just sits there and renders
+  whatever it's told.
+
+  To control the display from any S3 project, you only need to:
+
+  STEP 1 — Wire S3 to C6 (if not already done)
+    S3 GPIO17  →  C6 GPIO9   (S3 TX to C6 RX)
+    S3 GND     —  C6 GND     (common ground — mandatory)
+    (GPIO18 / C6 GPIO14 RX←TX line is optional, only needed if you want
+     to receive the ALIVE heartbeat from C6)
+
+  STEP 2 — Init UART1 in your S3 project
+    #include "driver/uart.h"
+
+    #define DISP_UART       UART_NUM_1
+    #define DISP_UART_TX    17
+    #define DISP_UART_RX    18   // or UART_PIN_NO_CHANGE if you don't need RX
+
+    uart_config_t cfg = {
+        .baud_rate  = 115200,
+        .data_bits  = UART_DATA_8_BITS,
+        .parity     = UART_PARITY_DISABLE,
+        .stop_bits  = UART_STOP_BITS_1,
+        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+    };
+    uart_driver_install(DISP_UART, 512, 512, 0, NULL, 0);
+    uart_param_config(DISP_UART, &cfg);
+    uart_set_pin(DISP_UART, DISP_UART_TX, DISP_UART_RX,
+                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+  STEP 3 — Send commands with a helper
+    static void disp_cmd(const char *cmd) {
+        uart_write_bytes(DISP_UART, cmd, strlen(cmd));
+        uart_write_bytes(DISP_UART, "\n", 1);
+    }
+
+  STEP 4 — Call it anywhere in your code
+    disp_cmd("FILL:255,0,0");          // red screen
+    disp_cmd("FILL:0,0,0");            // black screen
+    disp_cmd("TEXT:Connecting...");    // centred white text
+    disp_cmd("TEXT:Sensor: 42.1 C");   // show a sensor reading
+    disp_cmd("CLEAR");                 // blank screen
+
+  That's it. The C6 handles all SPI, LVGL, and rendering.
+  The S3 just sends one-line text commands over UART.
+
+================================================================================

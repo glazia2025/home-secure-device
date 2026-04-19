@@ -1,0 +1,12 @@
+[project]
+name = "glazia-prototype"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.135.2",
+    "python-jose[cryptography]>=3.5.0",
+    "qrcode[pil]>=8.2",
+    "uvicorn>=0.42.0",
+]
