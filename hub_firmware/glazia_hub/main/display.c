@@ -20,6 +20,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
+#include "driver/gpio.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
@@ -28,6 +29,7 @@
 #include "esp_lvgl_port.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 
 static const char *TAG = "DISPLAY";
@@ -47,14 +49,204 @@ extern const lv_img_dsc_t img_glazia_logo;
 static lv_obj_t *s_status_label   = NULL;
 static lv_obj_t *s_location_label = NULL;
 static lv_obj_t *s_sensor_label   = NULL;
+static lv_obj_t *s_critical_sw    = NULL;
 
+/* ── XPT2046 touch — raw SPI device (no registry component needed) ───────── */
+static spi_device_handle_t s_tp_spi = NULL;
+static lv_indev_t         *s_tp_indev = NULL;
+static lv_indev_drv_t      s_tp_drv;
 /* ── Hardware init ───────────────────────────────────────────────────────── */
+
+/*
+ * XPT2046 calibration constants — derived from observed raw ADC min/max.
+ *
+ * On this panel the axes are physically swapped relative to the ILI9341:
+ *   0xD0 (XPT2046 "X") → measures the VERTICAL position (screen Y)
+ *   0x90 (XPT2046 "Y") → measures the HORIZONTAL position (screen X)
+ *
+ * The LCD is initialised with mirror(true, false) — X axis is flipped —
+ * so the touch horizontal coordinate must also be mirrored.
+ *
+ * Adjust these if the touch boundary feels off after calibration:
+ */
+#define TP_X_RAW_MIN   0    /* 0x90 reading at the left   edge of the panel */
+#define TP_X_RAW_MAX   1300    /* 0x90 reading at the right  edge of the panel (corrected for this hardware) */
+#define TP_Y_RAW_MIN  1173   /* 0xD0 reading at the top edge of the panel */
+#define TP_Y_RAW_MAX  2465    /* 0xD0 reading at the bottom edge of the panel */
+
+/*
+ * XPT2046 single-channel read.
+ * cmd: 0xD0 = X axis, 0x90 = Y axis  (12-bit differential mode)
+ * Protocol: send 1 command byte + 2 zero bytes; result is in bytes 1–2,
+ * bits [14:3], so right-shift by 3 to get the 12-bit ADC value (0–4095).
+ */
+static uint16_t xpt2046_read_raw(uint8_t cmd)
+{
+    uint8_t tx[3] = {cmd, 0x00, 0x00};
+    uint8_t rx[3] = {0x00, 0x00, 0x00};
+    spi_transaction_t t = {
+        .length    = 24,        /* 3 bytes */
+        .tx_buffer = tx,
+        .rx_buffer = rx,
+    };
+    spi_device_transmit(s_tp_spi, &t);
+    uint16_t result = (((uint16_t)rx[1] << 8) | rx[2]) >> 3;
+
+    return result;
+}
+
+/*
+ * Average 8 successive reads of the same channel.
+ * XPT2046 is noisy; a single read can jump ~30 px, which LVGL's click
+ * detector treats as a drag and never fires LV_EVENT_CLICKED on the switch.
+ * Averaging stabilises the reported position to within ~3 px.
+ */
+static uint16_t xpt2046_read_avg(uint8_t cmd)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i < 6; i++) {
+        sum += xpt2046_read_raw(cmd);
+    }
+    return (uint16_t)(sum / 6);
+}
+
+/*
+ * LVGL input-device read callback — called from the LVGL task on every tick.
+ * T_IRQ is active-low: LOW = panel touched.
+ */
+
+static void xpt2046_read_cb(lv_indev_drv_t *drv,
+                            lv_indev_data_t *data)
+{
+    LV_UNUSED(drv);
+
+    static bool s_last_pressed = false;
+
+    bool pressed =
+        (gpio_get_level(TOUCH_PIN_IRQ) == 0);
+
+
+    if (pressed) {
+
+        /*
+         * 0xD0 -> vertical
+         * 0x90 -> horizontal
+         */
+
+        uint16_t raw_phys_y =
+            xpt2046_read_avg(0xD0);
+
+        uint16_t raw_phys_x =
+            xpt2046_read_avg(0x90);
+
+        if (raw_phys_x > 3500 || raw_phys_y > 3500) { data->state = LV_INDEV_STATE_RELEASED; return; }
+
+        /*
+         * Clamp
+         */
+
+        if (raw_phys_x < TP_X_RAW_MIN)
+            raw_phys_x = TP_X_RAW_MIN;
+
+        if (raw_phys_x > TP_X_RAW_MAX)
+            raw_phys_x = TP_X_RAW_MAX;
+
+        if (raw_phys_y < TP_Y_RAW_MIN)
+            raw_phys_y = TP_Y_RAW_MIN;
+
+        if (raw_phys_y > TP_Y_RAW_MAX)
+            raw_phys_y = TP_Y_RAW_MAX;
+
+        /*
+         * Interpolate
+         */
+
+        lv_coord_t px =
+            (lv_coord_t)(
+                ((uint32_t)(raw_phys_x - TP_X_RAW_MIN)
+                * (LCD_H_RES - 1))
+                / (TP_X_RAW_MAX - TP_X_RAW_MIN)
+            );
+
+        lv_coord_t py =
+            (lv_coord_t)(
+                ((uint32_t)(raw_phys_y - TP_Y_RAW_MIN)
+                * (LCD_V_RES - 1))
+                / (TP_Y_RAW_MAX - TP_Y_RAW_MIN)
+            );
+
+        /*
+         * LCD mirrored in X
+         */
+
+        px = (LCD_H_RES - 1) - px;
+
+
+        /*
+            * Final clamp
+         */
+
+        if (px < 0)
+            px = 0;
+
+        if (px >= LCD_H_RES)
+            px = LCD_H_RES - 1;
+
+        if (py < 0)
+            py = 0;
+
+        if (py >= LCD_V_RES)
+            py = LCD_V_RES - 1;
+
+        data->point.x = px;
+        data->point.y = py;
+
+        static uint32_t dbg_counter = 0;
+
+        if ((dbg_counter++ % 10) == 0) {
+            ESP_LOGI(TAG,
+                     "TOUCH raw=(%u,%u) px=(%d,%d)",
+                     raw_phys_x,
+                     raw_phys_y,
+                     px,
+                     py);
+        }
+    }
+
+    if (!pressed && s_last_pressed) {
+        ESP_LOGI(TAG, "TOUCH released");
+    }
+
+    s_last_pressed = pressed;
+
+    data->state =
+        pressed
+        ? LV_INDEV_STATE_PRESSED
+        : LV_INDEV_STATE_RELEASED;
+}
+
+/*
+ * Critical toggle event callback — fires on LV_EVENT_VALUE_CHANGED.
+ * Currently just logs toggle state. No fingerprint verification for now.
+ */
+static void critical_toggle_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e); ESP_LOGI(TAG, "Switch event code=%d", code);
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool is_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+
+    if (is_on) {
+        ESP_LOGI(TAG, "Critical Toggle: ON");
+    } else {
+        ESP_LOGI(TAG, "Critical Toggle: OFF");
+    }
+}
 
 static void lcd_hw_init(void)
 {
     spi_bus_config_t bus = {
         .mosi_io_num     = LCD_PIN_MOSI,
-        .miso_io_num     = -1,
+        .miso_io_num     = TOUCH_PIN_MISO,
         .sclk_io_num     = LCD_PIN_SCK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
@@ -93,6 +285,26 @@ static void lcd_hw_init(void)
     esp_lcd_panel_disp_on_off(panel, true);
     vTaskDelay(pdMS_TO_TICKS(50));
 
+    /* T_IRQ: active-low open-drain output from XPT2046 — pull up internally */
+    gpio_config_t irq_cfg = {
+        .pin_bit_mask = 1ULL << TOUCH_PIN_IRQ,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&irq_cfg));
+
+    /* Register XPT2046 as a separate SPI device on SPI2 */
+    spi_device_interface_config_t tp_devcfg = {
+        .clock_speed_hz = 1000 * 1000,  // 1 MHz
+        .mode           = 0,                 // SPI mode 0 (CPOL=0, CPHA=0)
+        .spics_io_num   = TOUCH_PIN_CS,      // GPIO5
+        .queue_size     = 1,
+        .flags          = 0,
+    };
+    ESP_ERROR_CHECK(spi_bus_add_device(LCD_SPI_HOST, &tp_devcfg, &s_tp_spi));
+
     /* Hand off to LVGL port */
     const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&port_cfg));
@@ -123,6 +335,7 @@ static void build_ui(lv_disp_t *disp)
     /* Root screen — red background */
     lv_obj_t *scr = lv_obj_create(NULL);
     lv_obj_set_size(scr, LCD_H_RES, LCD_V_RES);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(scr, lv_color_make(240, 240, 240), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(scr, 0, LV_PART_MAIN);
@@ -185,18 +398,28 @@ static void build_ui(lv_disp_t *disp)
 
     /* ── Critical toggle (always ON while hub is powered) ────────────────── */
     {
-        lv_obj_t *sw = lv_switch_create(scr);
-        lv_obj_set_size(sw, 52, 26);
-        lv_obj_align(sw, LV_ALIGN_TOP_MID, 0, 144);
-        lv_obj_add_state(sw, LV_STATE_CHECKED);
-        lv_obj_clear_flag(sw, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_bg_color(sw, lv_color_make(238, 28, 37),
+        s_critical_sw = lv_switch_create(scr);
+        lv_obj_set_size(s_critical_sw, 52, 26);
+        lv_obj_align(s_critical_sw, LV_ALIGN_TOP_MID, 0, 144);
+        lv_obj_set_ext_click_area(s_critical_sw, 40);  /* extend hitbox 40px in all directions */
+        lv_obj_add_flag(
+            s_critical_sw,
+            LV_OBJ_FLAG_PRESS_LOCK
+        );
+
+        lv_obj_add_state(
+            s_critical_sw,
+            LV_STATE_CHECKED
+        );
+        lv_obj_add_event_cb(s_critical_sw, critical_toggle_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        lv_obj_add_event_cb(s_critical_sw, critical_toggle_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_set_style_bg_color(s_critical_sw, lv_color_make(238, 28, 37),
                                    LV_PART_INDICATOR | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_opa(sw, LV_OPA_COVER,
+        lv_obj_set_style_bg_opa(s_critical_sw, LV_OPA_COVER,
                                   LV_PART_INDICATOR | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(sw, lv_color_white(),
+        lv_obj_set_style_bg_color(s_critical_sw, lv_color_white(),
                                    LV_PART_KNOB | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_opa(sw, LV_OPA_COVER,
+        lv_obj_set_style_bg_opa(s_critical_sw, LV_OPA_COVER,
                                   LV_PART_KNOB | LV_STATE_DEFAULT);
 
         lv_obj_t *lbl = lv_label_create(scr);
@@ -217,7 +440,7 @@ static void build_ui(lv_disp_t *disp)
         lv_obj_set_style_border_width(panel, 1, LV_PART_MAIN);
         lv_obj_set_style_radius(panel, 6, LV_PART_MAIN);
         lv_obj_set_style_pad_all(panel, 8, LV_PART_MAIN);
-        lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+        lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
 
         s_sensor_label = lv_label_create(panel);
         lv_label_set_text(s_sensor_label,
@@ -247,9 +470,17 @@ void display_init(void)
         return;
     }
     build_ui(lv_disp_get_default());
+
+    /* Register XPT2046 as LVGL pointer input device inside the lock */
+    lv_indev_drv_init(&s_tp_drv);
+    s_tp_drv.type         = LV_INDEV_TYPE_POINTER;
+    s_tp_drv.read_cb      = xpt2046_read_cb;
+    s_tp_drv.scroll_limit = 50;
+    s_tp_indev = lv_indev_drv_register(&s_tp_drv);
+
     lvgl_port_unlock();
 
-    ESP_LOGI(TAG, "Display ready — SPI direct, MOSI=GPIO%d", LCD_PIN_MOSI);
+    ESP_LOGI(TAG, "Display ready — SPI direct, MOSI=GPIO%d, touch enabled", LCD_PIN_MOSI);
 }
 
 /* Thread-safe label update helper */

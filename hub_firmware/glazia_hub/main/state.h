@@ -50,3 +50,11 @@ extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
 #define LCD_PIN_CS    10
 #define LCD_PIN_DC    13
 #define LCD_PIN_RST   14
+
+// Touch — XPT2046 resistive touch controller on same SPI2 bus as LCD
+// T_CLK shares LCD_PIN_SCK (GPIO12), T_DIN shares LCD_PIN_MOSI (GPIO4)
+// Wire: T_OUT→GPIO2, T_CS→GPIO5, T_IRQ→GPIO17
+//       (set TOUCH_PIN_IRQ to -1 if T_IRQ left unwired)
+#define TOUCH_PIN_MISO  2   // T_OUT
+#define TOUCH_PIN_CS     5   // T_CS
+#define TOUCH_PIN_IRQ   17   // T_IRQ
