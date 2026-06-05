@@ -51,7 +51,7 @@ static const char *TAG = "DISPLAY";
 #define LCD_PIXEL_CLK_HZ   (10 * 1000 * 1000)
 #define LCD_CMD_BITS       8
 #define LCD_PARAM_BITS     8
-#define DRAW_BUF_LINES     20
+#define DRAW_BUF_LINES     8
 
 /* ── LVGL object handles (set once in display_init, read-only after) ─────── */
 static lv_obj_t *s_critical_sw    = NULL;
@@ -263,9 +263,10 @@ static void auth_toggle_task(void *arg)
     free(a);
 
     g_mode = MODE_FINGERPRINT_VERIFY;
-    display_show_fingerprint_screen("Authentication", "Place your finger on the sensor");
+    display_show_fingerprint_screen(action == AUTH_ACTION_ADD_FINGERPRINT ? "Admin Authentication" : "Authentication",
+                                    "Place your finger on the sensor");
     vTaskDelay(pdMS_TO_TICKS(350));
-    esp_err_t result = fp_verify();
+    esp_err_t result = (action == AUTH_ACTION_ADD_FINGERPRINT) ? fp_verify_admin() : fp_verify();
 
     if (result == ESP_OK) {
         if (action == AUTH_ACTION_ADD_SENSOR) {
@@ -652,6 +653,22 @@ static bool display_is_ready(void)
     return s_display_state == DISPLAY_READY;
 }
 
+bool display_wait_ready(uint32_t timeout_ms)
+{
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+
+    while (s_display_state == DISPLAY_STARTING || s_display_state == DISPLAY_NOT_STARTED) {
+        if (timeout_ms > 0 && (xTaskGetTickCount() - start) >= timeout_ticks) {
+            ESP_LOGW(TAG, "Display readiness wait timed out, state=%d", (int)s_display_state);
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    return s_display_state == DISPLAY_READY;
+}
+
 static const char *nonnull_text(const char *text, const char *fallback)
 {
     return (text && text[0]) ? text : fallback;
@@ -679,6 +696,9 @@ static void set_offline_dashboard_locked(bool setup)
 
 static const char *fingerprint_phase_for_title(const char *title)
 {
+    if (title && (strstr(title, "Admin") || strstr(title, "admin"))) {
+        return "Admin User Only\nVerifying your fingerprint";
+    }
     if (title && (strstr(title, "Verify") || strstr(title, "verify") ||
                   strstr(title, "Authentication") || strstr(title, "authentication"))) {
         return "Verifying your fingerprint";
@@ -789,16 +809,6 @@ static void cache_apply_locked(void)
         break;
     }
 
-    if (s_display_cache.line1[0] || s_display_cache.line2[0]) {
-        if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
-            set_label_locked(objects.hub_status, s_display_cache.line1);
-            set_label_locked(objects.sensor_info, s_display_cache.line2);
-        } else if (s_current_screen == SCREEN_ID_HUB_OFFLINE) {
-            set_label_locked(objects.hub_status_1, s_display_cache.line1);
-            set_label_locked(objects.sensor_info_1, s_display_cache.line2);
-        }
-    }
-
     if (s_display_cache.home_name[0]) {
         if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
             set_label_locked(objects.sensor_info, s_display_cache.home_name);
@@ -872,7 +882,7 @@ static void add_fingerprint_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     ESP_LOGI(TAG, "Touch: Add Fingerprint");
-    show_fingerprint_screen_locked("Authentication", "Place your finger on the sensor");
+    show_fingerprint_screen_locked("Admin Authentication", "Place your finger on the sensor");
     start_auth_action(AUTH_ACTION_ADD_FINGERPRINT, NULL, false);
 }
 
@@ -1116,10 +1126,11 @@ void display_show(const char *line1, const char *line2)
 
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
         if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
-            set_label_locked(objects.hub_status, line1);
+            set_label_locked(objects.hub_status, "Online");
             set_label_locked(objects.sensor_info, line2 ? line2 : "");
         } else if (s_current_screen == SCREEN_ID_HUB_OFFLINE) {
-            set_label_locked(objects.hub_status_1, line1);
+            set_label_locked(objects.hub_status_1,
+                             s_display_cache.view == CACHE_VIEW_SETUP ? "Setup" : "Offline");
             set_label_locked(objects.sensor_info_1, line2 ? line2 : "");
         }
         lvgl_port_unlock();
@@ -1133,6 +1144,7 @@ void display_show_setup_prompt(void)
     s_display_cache.view = CACHE_VIEW_SETUP;
     s_display_cache.line1[0] = '\0';
     s_display_cache.line2[0] = '\0';
+    s_display_cache.home_name[0] = '\0';
     cache_unlock();
 
     ESP_LOGI(TAG, "Display setup prompt");

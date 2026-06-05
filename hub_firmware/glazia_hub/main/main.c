@@ -3,6 +3,7 @@
 #include "wifi.h"
 #include "button.h"
 #include "display.h"
+#include "door_lock.h"
 #include "fingerprint.h"
 #include "hub_sensor.h"
 #include "state.h"
@@ -13,12 +14,31 @@
 
 static const char *TAG = "MAIN";
 
+#define ENABLE_FINGERPRINT_BOOT_INIT 0
+#define FINGERPRINT_INIT_DELAY_MS 3000
+
 // Instantiate globals
 hub_mode_t g_mode = MODE_IDLE;
 char g_wifi_ssid[64] = {0}, g_wifi_password[64] = {0}, g_provisioning_token[64] = {0};
 char g_hub_mac[18] = {0}, g_hub_secret[128] = {0}, g_home_id[64] = {0}, g_home_name[64] = {0}, g_user_name[64] = {0};
 char g_pending_sensor_mac[18] = {0};
 char g_pending_provision_key[33] = {0};
+
+static void fingerprint_init_task(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(FINGERPRINT_INIT_DELAY_MS));
+    ESP_LOGI(TAG, "delayed fp_init starting");
+    esp_err_t fp_err = fp_init();
+    if (fp_err != ESP_OK) {
+        ESP_LOGW(TAG, "Fingerprint init failed: %s", esp_err_to_name(fp_err));
+    } else {
+        ESP_LOGI(TAG, "Fingerprint driver ready");
+    }
+
+    vTaskDelete(NULL);
+}
 
 void app_main(void) {
     ESP_LOGI(TAG, "APP CONSOLE: UART0 active");
@@ -37,24 +57,35 @@ void app_main(void) {
     snprintf(g_hub_mac, sizeof(g_hub_mac), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "HUB MAC: %s", g_hub_mac);
 
+    ESP_LOGI(TAG, "wifi_platform_init starting");
+    esp_err_t wifi_platform_err = wifi_platform_init();
+    if (wifi_platform_err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi platform init failed: %s", esp_err_to_name(wifi_platform_err));
+    } else {
+        ESP_LOGI(TAG, "WiFi platform ready");
+    }
+
+    ESP_LOGI(TAG, "door_lock_init starting");
+    esp_err_t lock_err = door_lock_init();
+    if (lock_err != ESP_OK) {
+        ESP_LOGW(TAG, "Door lock init failed: %s", esp_err_to_name(lock_err));
+    } else {
+        ESP_LOGI(TAG, "Door lock GPIO inactive");
+    }
+
     ESP_LOGI(TAG, "display_init starting");
     display_init();
     ESP_LOGI(TAG, "display_init queued/done");
 
-    ESP_LOGI(TAG, "hub_sensor_init starting");
-    esp_err_t hub_sensor_err = hub_sensor_init();
-    if (hub_sensor_err != ESP_OK) {
-        ESP_LOGW(TAG, "Hub sensor init failed: %s", esp_err_to_name(hub_sensor_err));
-    } else {
-        ESP_LOGI(TAG, "Hub DHT22 sensor ready");
-    }
+    ESP_LOGI(TAG, "Hub DHT22 sensor init delayed until WiFi is connected");
 
-    ESP_LOGI(TAG, "fp_init starting");
-    esp_err_t fp_err = fp_init();
-    if (fp_err != ESP_OK) {
-        ESP_LOGW(TAG, "Fingerprint init failed: %s", esp_err_to_name(fp_err));
+    if (ENABLE_FINGERPRINT_BOOT_INIT) {
+        ESP_LOGI(TAG, "fingerprint delayed init task starting");
+        if (xTaskCreate(fingerprint_init_task, "fp_init", 4096, NULL, 5, NULL) != pdPASS) {
+            ESP_LOGW(TAG, "Failed to create fingerprint init task");
+        }
     } else {
-        ESP_LOGI(TAG, "Fingerprint driver ready");
+        ESP_LOGW(TAG, "Fingerprint boot init disabled to keep hub boot stable");
     }
 
     ESP_LOGI(TAG, "button_init starting");

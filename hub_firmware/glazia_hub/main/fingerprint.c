@@ -5,8 +5,8 @@
  * which is the verified working ESP-IDF sample for this hardware.
  *
  * Wiring for this prototype:
- *   R307 TX -> ESP32-S3 GPIO16 (UART2 RX)
- *   R307 RX -> ESP32-S3 GPIO15 (UART2 TX)
+ *   R307 TX -> ESP32-S3 GPIO2 (UART2 RX)
+ *   R307 RX -> ESP32-S3 GPIO1 (UART2 TX)
  */
 
 #include "fingerprint.h"
@@ -25,8 +25,8 @@
 static const char *TAG = "FINGERPRINT";
 
 #define R307_UART_NUM UART_NUM_2
-#define R307_TX_PIN 15
-#define R307_RX_PIN 16
+#define R307_TX_PIN 1
+#define R307_RX_PIN 2
 #define R307_BAUD_RATE 57600
 #define R307_RX_BUF_SIZE 256
 #define R307_CMD_TIMEOUT_MS 5000
@@ -170,24 +170,30 @@ static esp_err_t r307_uart_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
+    ESP_LOGI(TAG, "R307 UART%d driver install starting", R307_UART_NUM);
     esp_err_t err = uart_driver_install(R307_UART_NUM, R307_RX_BUF_SIZE * 2, 0, 0, NULL, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "UART driver install failed: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "R307 UART%d driver install complete", R307_UART_NUM);
 
+    ESP_LOGI(TAG, "R307 UART%d param config starting", R307_UART_NUM);
     err = uart_param_config(R307_UART_NUM, &uart_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "UART config failed: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "R307 UART%d param config complete", R307_UART_NUM);
 
+    ESP_LOGI(TAG, "R307 UART%d pin config starting", R307_UART_NUM);
     err = uart_set_pin(R307_UART_NUM, R307_TX_PIN, R307_RX_PIN,
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "UART pin config failed: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "R307 UART%d pin config complete", R307_UART_NUM);
 
     ESP_LOGI(TAG, "R307 UART%d initialized: ESP TX=GPIO%d ESP RX=GPIO%d baud=%d",
              R307_UART_NUM, R307_TX_PIN, R307_RX_PIN, R307_BAUD_RATE);
@@ -462,17 +468,20 @@ static bool fp_slot_is_authorized(const uint16_t *slots, uint8_t count, uint16_t
     return false;
 }
 
-static esp_err_t fp_verify_once(int attempt_num)
+static esp_err_t fp_verify_once(int attempt_num, bool admin_only)
 {
     const TickType_t start = xTaskGetTickCount();
     const TickType_t scan_start = start + pdMS_TO_TICKS(FP_SCAN_START_DELAY_MS);
     const TickType_t deadline = start + pdMS_TO_TICKS(FP_VERIFY_WINDOW_MS);
     esp_err_t result = ESP_FAIL;
+    const char *phase = admin_only
+        ? "Admin User Only\nVerifying your fingerprint"
+        : "Verifying your fingerprint";
 
-    display_fingerprint_phase("Verifying your fingerprint", "Place your finger on the sensor");
+    display_fingerprint_phase(phase, "Place your finger on the sensor");
 
     delay_until_tick_with_progress(start, deadline, scan_start);
-    display_fingerprint_phase("Verifying your fingerprint", "Processing...");
+    display_fingerprint_phase(phase, "Processing...");
 
     if (!r307_capture_to_buffer_until(1, start, deadline)) {
         goto done;
@@ -487,10 +496,16 @@ static esp_err_t fp_verify_once(int attempt_num)
 
     uint16_t min_slot = slots[0];
     uint16_t max_slot = slots[0];
-    for (uint8_t i = 0; i < count; i++) {
-        ESP_LOGI(TAG, "Authorized fingerprint slot[%u]=%u", i, slots[i]);
-        if (slots[i] < min_slot) min_slot = slots[i];
-        if (slots[i] > max_slot) max_slot = slots[i];
+    uint8_t authorized_count = count;
+    if (admin_only) {
+        authorized_count = 1;
+        ESP_LOGI(TAG, "Admin fingerprint slot=%u", slots[0]);
+    } else {
+        for (uint8_t i = 0; i < count; i++) {
+            ESP_LOGI(TAG, "Authorized fingerprint slot[%u]=%u", i, slots[i]);
+            if (slots[i] < min_slot) min_slot = slots[i];
+            if (slots[i] > max_slot) max_slot = slots[i];
+        }
     }
 
     const uint16_t page_count = (uint16_t)(max_slot - min_slot + 1);
@@ -517,10 +532,11 @@ static esp_err_t fp_verify_once(int attempt_num)
         const uint16_t matched_slot = ((uint16_t)response.data[0] << 8) | response.data[1];
         const uint16_t score = ((uint16_t)response.data[2] << 8) | response.data[3];
         ESP_LOGI(TAG, "Match found: slot=%u score=%u", matched_slot, score);
-        if (fp_slot_is_authorized(slots, count, matched_slot)) {
+        if (fp_slot_is_authorized(slots, authorized_count, matched_slot)) {
             result = ESP_OK;
         } else {
-            ESP_LOGW(TAG, "Matched fingerprint slot %u is not authorized by NVS", matched_slot);
+            ESP_LOGW(TAG, "Matched fingerprint slot %u is not authorized for %s",
+                     matched_slot, admin_only ? "admin action" : "this action");
         }
         goto done;
     }
@@ -532,14 +548,14 @@ done:
     delay_until_tick(deadline);
     display_fingerprint_progress(100);
     if (result == ESP_OK) {
-        display_fingerprint_phase("Verifying your fingerprint", "Access granted");
+        display_fingerprint_phase(phase, "Access granted");
     } else {
-        display_fingerprint_phase("Verifying your fingerprint", "Denied");
+        display_fingerprint_phase(phase, "Denied");
     }
     return result;
 }
 
-esp_err_t fp_verify(void)
+static esp_err_t fp_verify_with_scope(bool admin_only)
 {
     if (!s_initialized) {
         ESP_LOGW(TAG, "Fingerprint verification requested before driver init");
@@ -551,10 +567,11 @@ esp_err_t fp_verify(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Fingerprint verification started: attempts=%d", FP_VERIFY_ATTEMPTS);
+    ESP_LOGI(TAG, "Fingerprint verification started: attempts=%d admin_only=%d",
+             FP_VERIFY_ATTEMPTS, admin_only ? 1 : 0);
     for (int attempt = 1; attempt <= FP_VERIFY_ATTEMPTS; attempt++) {
         ESP_LOGI(TAG, "Fingerprint verification attempt %d/%d", attempt, FP_VERIFY_ATTEMPTS);
-        esp_err_t err = fp_verify_once(attempt);
+        esp_err_t err = fp_verify_once(attempt, admin_only);
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "Fingerprint verification succeeded on attempt %d", attempt);
             vTaskDelay(pdMS_TO_TICKS(FP_SUCCESS_RESULT_HOLD_MS));
@@ -568,6 +585,16 @@ esp_err_t fp_verify(void)
 
     ESP_LOGW(TAG, "Fingerprint verification failed after %d attempts", FP_VERIFY_ATTEMPTS);
     return ESP_FAIL;
+}
+
+esp_err_t fp_verify(void)
+{
+    return fp_verify_with_scope(false);
+}
+
+esp_err_t fp_verify_admin(void)
+{
+    return fp_verify_with_scope(true);
 }
 
 bool fp_is_enrolled(void)

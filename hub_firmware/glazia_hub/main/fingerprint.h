@@ -7,7 +7,7 @@
  * R307 Fingerprint Sensor Driver
  *
  * Communicates over UART2 at 57600 baud.
- * Wiring: R307 TX -> GPIO16 (ESP RX), R307 RX -> GPIO15 (ESP TX).
+ * Wiring: R307 TX -> GPIO2 (ESP RX), R307 RX -> GPIO1 (ESP TX).
  * Stores one master template in R307's onboard flash (slot 1).
  */
 
@@ -30,6 +30,12 @@ esp_err_t fp_enroll(void);
  * Returns ESP_OK if match found, ESP_FAIL if no match.
  */
 esp_err_t fp_verify(void);
+
+/**
+ * Verify only the admin fingerprint.
+ * The first saved fingerprint slot is the admin slot.
+ */
+esp_err_t fp_verify_admin(void);
 
 /**
  * Check if a fingerprint is enrolled in NVS.

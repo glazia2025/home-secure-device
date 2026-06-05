@@ -1,5 +1,9 @@
 #pragma once
 #include <stdbool.h>
+#include "esp_err.h"
+
+// Initialize ESP-NETIF and the default event loop before app peripherals.
+esp_err_t wifi_platform_init(void);
 
 // Connect to WiFi using given credentials
 // Calls api_register_hub() automatically on success

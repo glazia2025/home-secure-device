@@ -15,6 +15,7 @@ dependencies:
   #   # All dependencies of `main` are public by default.
   #   public: true
   espressif/esp_websocket_client: '*'
+  espressif/esp32-camera: "^2.1.6"
 
   # TFT display — ILI9341 driven directly from S3 over SPI
   lvgl/lvgl:

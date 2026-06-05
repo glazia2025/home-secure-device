@@ -30,9 +30,9 @@ extern char g_pending_sensor_mac[18];    // e.g. "AA:BB:CC:DD:EE:FF"
 extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
 
 // ── Server Config ─────────────────────────────────────────────────────────
-#define SERVER_IP      "10.186.209.6"
+#define SERVER_IP      "10.242.127.6"
 #define SERVER_PORT    3000
-#define SERVER_BASE    "http://10.186.209.6:3000"
+#define SERVER_BASE    "http://10.242.127.6:3000"
 #define DEVICE_API_KEY "glazia-device-dev-key"
 #define BLE_DEVICE_NAME "GlaziaHub"
 
@@ -42,21 +42,20 @@ extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
 #define GLAZIA_ESP_NOW_PMK  "glz!dev.pmk.2024"   // exactly 16 bytes
 
 // ── ESP32-S3 GPIO PINS ────────────────────────────────────────────────────
-#define BUTTON_GPIO   21   // General purpose GPIO, safe on ESP32-S3-N16R8
+#define BUTTON_GPIO   19   // Active-low button; GPIO19 is USB D+ on many S3 boards
 
 // Display — S3 drives ILI9341 TFT directly over SPI (no C6 bridge)
-// GPIO4 (MOSI) is intentionally off the SPI2 IOMUX to force GPIO-matrix routing.
-// Wire: MOSI=GPIO4, SCK=GPIO12, CS=GPIO10, DC=GPIO13, RST=GPIO14
+// Wire: MOSI=GPIO38, SCK=GPIO39, CS=GPIO40, DC=GPIO41, RST=GPIO42
 //       LED/BL → 3.3 V, GND shared
-#define LCD_PIN_MOSI   4
-#define LCD_PIN_SCK   12
-#define LCD_PIN_CS    10
-#define LCD_PIN_DC    13
-#define LCD_PIN_RST   14
+#define LCD_PIN_MOSI  38
+#define LCD_PIN_SCK   39
+#define LCD_PIN_CS    40
+#define LCD_PIN_DC    41
+#define LCD_PIN_RST   42
 
 // Touch — XPT2046 resistive touch controller on same SPI2 bus as LCD
-// T_CLK shares LCD_PIN_SCK (GPIO12), T_DIN shares LCD_PIN_MOSI (GPIO4)
+// T_CLK shares LCD_PIN_SCK (GPIO39), T_DIN shares LCD_PIN_MOSI (GPIO38)
 
-#define TOUCH_PIN_MISO  2   // T_OUT
-#define TOUCH_PIN_CS     5   // T_CS
-#define TOUCH_PIN_IRQ   17   // T_IRQ
+#define TOUCH_PIN_MISO 47   // T_OUT
+#define TOUCH_PIN_CS   48   // T_CS
+#define TOUCH_PIN_IRQ  21   // T_IRQ

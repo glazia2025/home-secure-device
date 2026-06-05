@@ -1,6 +1,7 @@
 #include "api_client.h"
 #include "state.h"
 #include "display.h"
+#include "hub_control_ws.h"
 #include "nvs_storage.h"
 #include "fingerprint.h"
 #include "esp_http_client.h"
@@ -141,6 +142,7 @@ void api_register_hub(void)
         display_show_dashboard(true);
         display_hub_location(g_home_name);
         fp_start_enroll_if_needed();
+        hub_control_ws_start();
         ESP_LOGI(TAG, "Hub registered! Home: %s  Secret prefix: %.8s...", g_home_name, g_hub_secret);
     } else {
         ESP_LOGE(TAG, "Registration failed: HTTP %d", status);
