@@ -16,6 +16,37 @@ static const char *TAG = "HUB_WS";
 static esp_websocket_client_handle_t s_client;
 static bool s_started;
 
+void hub_control_ws_send_camera_status(const char *stream_session_id,
+                                       const char *status,
+                                       const char *error)
+{
+    if (!s_client || !esp_websocket_client_is_connected(s_client)) {
+        ESP_LOGW(TAG, "Cannot send camera status; websocket is not connected");
+        return;
+    }
+
+    char message[256];
+    if (error && error[0]) {
+        snprintf(message, sizeof(message),
+                 "{\"type\":\"camera_stream_status\",\"streamSessionId\":\"%s\",\"status\":\"%s\",\"error\":\"%s\"}",
+                 stream_session_id ? stream_session_id : "",
+                 status ? status : "unknown",
+                 error);
+    } else {
+        snprintf(message, sizeof(message),
+                 "{\"type\":\"camera_stream_status\",\"streamSessionId\":\"%s\",\"status\":\"%s\"}",
+                 stream_session_id ? stream_session_id : "",
+                 status ? status : "unknown");
+    }
+
+    int sent = esp_websocket_client_send_text(s_client, message, strlen(message), pdMS_TO_TICKS(1000));
+    if (sent < 0) {
+        ESP_LOGW(TAG, "Failed to send camera status=%s stream=%.8s",
+                 status ? status : "unknown",
+                 stream_session_id ? stream_session_id : "");
+    }
+}
+
 static void send_door_lock_ack(const char *command_id,
                                const char *status,
                                const char *lock_state,
@@ -82,8 +113,14 @@ static void handle_camera_stream_command(cJSON *root)
         return;
     }
 
+    ESP_LOGI(TAG, "Camera stream command action=%s", action->valuestring);
+
     if (strcmp(action->valuestring, "start") == 0) {
-        esp_err_t err = camera_stream_start();
+        cJSON *stream_session_id = cJSON_GetObjectItem(root, "streamSessionId");
+        const char *session = cJSON_IsString(stream_session_id) && stream_session_id->valuestring
+                                  ? stream_session_id->valuestring
+                                  : "";
+        esp_err_t err = camera_stream_start(session);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Camera stream start failed: %s", esp_err_to_name(err));
         }

@@ -7,6 +7,7 @@ idf_component_register(
         "ble.c"
         "wifi.c"
         "api_client.c"
+        "camera_media_ws.c"
         "camera_stream.c"
         "door_lock.c"
         "espnow.c"

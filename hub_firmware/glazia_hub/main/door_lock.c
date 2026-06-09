@@ -15,6 +15,7 @@
 #define RELAY_ON       0
 #define RELAY_OFF      1
 #define UNLOCK_PULSE_MS 3000
+#define MAX_TOGGLE_HOLD_MS 10000
 
 #if DOOR_LOCK_GPIO_NUM == 37
 #error "GPIO37 is unsafe for the lock relay on this ESP32-S3 PSRAM/camera hub build"
@@ -85,10 +86,14 @@ static void send_ack(const door_lock_command_t *command,
     }
 }
 
-static bool is_pulse_command(const door_lock_command_t *command)
+static bool is_auto_lock_open_command(const door_lock_command_t *command)
 {
-    return (strcmp(command->mode, "auto_lock") == 0 && strcmp(command->action, "open") == 0) ||
-           (strcmp(command->mode, "toggle") == 0 && strcmp(command->action, "on") == 0);
+    return strcmp(command->mode, "auto_lock") == 0 && strcmp(command->action, "open") == 0;
+}
+
+static bool is_toggle_on_command(const door_lock_command_t *command)
+{
+    return strcmp(command->mode, "toggle") == 0 && strcmp(command->action, "on") == 0;
 }
 
 static bool is_off_command(const door_lock_command_t *command)
@@ -101,7 +106,7 @@ static bool execute_command(const door_lock_command_t *command, door_lock_comman
     ESP_LOGI(TAG, "Command id=%s mode=%s action=%s duration=%" PRIu32,
              command->command_id, command->mode, command->action, command->duration_ms);
 
-    if (is_pulse_command(command)) {
+    if (is_auto_lock_open_command(command)) {
         esp_err_t err = set_trigger(true);
         if (err != ESP_OK) {
             send_ack(command, "failed", "locked", esp_err_to_name(err));
@@ -109,6 +114,48 @@ static bool execute_command(const door_lock_command_t *command, door_lock_comman
         }
 
         const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(UNLOCK_PULSE_MS);
+        door_lock_command_t interrupt_command;
+        while (1) {
+            TickType_t now = xTaskGetTickCount();
+            if ((int32_t)(deadline - now) <= 0) {
+                break;
+            }
+
+            if (xQueueReceive(s_command_queue, &interrupt_command, deadline - now) != pdTRUE) {
+                break;
+            }
+
+            if (is_off_command(&interrupt_command)) {
+                set_trigger(false);
+                send_ack(&interrupt_command, "executed", "locked", NULL);
+                send_ack(command, "executed", "locked", NULL);
+                return false;
+            }
+
+            set_trigger(false);
+            send_ack(command, "executed", "locked", NULL);
+            *next_command = interrupt_command;
+            return true;
+        }
+
+        set_trigger(false);
+        send_ack(command, "executed", "locked", NULL);
+        return false;
+    }
+
+    if (is_toggle_on_command(command)) {
+        esp_err_t err = set_trigger(true);
+        if (err != ESP_OK) {
+            send_ack(command, "failed", "locked", esp_err_to_name(err));
+            return false;
+        }
+
+        uint32_t hold_ms = command->duration_ms;
+        if (hold_ms == 0 || hold_ms > MAX_TOGGLE_HOLD_MS) {
+            hold_ms = MAX_TOGGLE_HOLD_MS;
+        }
+
+        const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(hold_ms);
         door_lock_command_t interrupt_command;
         while (1) {
             TickType_t now = xTaskGetTickCount();

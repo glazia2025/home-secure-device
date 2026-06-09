@@ -14,7 +14,7 @@
 
 static const char *TAG = "MAIN";
 
-#define ENABLE_FINGERPRINT_BOOT_INIT 0
+#define ENABLE_FINGERPRINT_BOOT_INIT 1
 #define FINGERPRINT_INIT_DELAY_MS 3000
 
 // Instantiate globals
@@ -35,6 +35,7 @@ static void fingerprint_init_task(void *arg)
         ESP_LOGW(TAG, "Fingerprint init failed: %s", esp_err_to_name(fp_err));
     } else {
         ESP_LOGI(TAG, "Fingerprint driver ready");
+        fp_start_enroll_if_needed();
     }
 
     vTaskDelete(NULL);
