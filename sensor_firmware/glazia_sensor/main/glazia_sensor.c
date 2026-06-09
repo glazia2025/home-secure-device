@@ -25,9 +25,6 @@
  *       Never transmitted over the air; AES-128 encrypts every ESP-NOW frame.
  */
 
-#include "esp_timer.h"
-#include "rom/ets_sys.h"
-
 #include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -37,6 +34,7 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -62,7 +60,9 @@ static const char *TAG = "SENSOR";
 /* ── Constants ──────────────────────────────────────────────────────────────
  */
 #define BUTTON_GPIO 6
-#define DHT_PIN GPIO_NUM_4
+#define REED_GPIO GPIO_NUM_4
+#define REED_EVENT_QUEUE_DEPTH 8
+#define REED_DEBOUNCE_MS 50
 #define BLE_ADV_TIMEOUT_MS (60 * 1000)
 #define HELLO_PROV_TIMEOUT_MS (2 * 60 * 1000)
 #define NVS_MAIN_NS "glz_main"
@@ -89,6 +89,7 @@ static volatile bool s_hub_paired = false;
 static volatile bool s_scan_stop = false;
 static char s_pair_nonce[17] = {0};
 static TaskHandle_t s_ack_task_handle = NULL;
+static QueueHandle_t s_reed_event_queue = NULL;
 
 typedef enum {
   PAIR_WAITING_HELLO = 0,
@@ -198,66 +199,6 @@ static bool parse_pair_payload(const char *payload, char *hub_mac,
     *channel = (matched == 4) ? parsed_channel : 0;
   }
   return true;
-}
-
-static int wait_for_level(int level, uint32_t timeout_us) {
-  uint32_t count = 0;
-  while (gpio_get_level(DHT_PIN) == level) {
-    if (count >= timeout_us)
-      return -1;
-    count++;
-    ets_delay_us(1);
-  }
-  return count;
-}
-
-esp_err_t read_dht22(float *humidity, float *temperature) {
-  uint8_t data[5] = {0};
-  int64_t time_start;
-
-  // 1. Handshake
-  gpio_set_direction(DHT_PIN, GPIO_MODE_OUTPUT);
-  gpio_set_level(DHT_PIN, 0);
-  vTaskDelay(pdMS_TO_TICKS(20));
-  gpio_set_level(DHT_PIN, 1);
-  ets_delay_us(40);
-  gpio_set_direction(DHT_PIN, GPIO_MODE_INPUT);
-
-  if (wait_for_level(0, 100) == -1)
-    return ESP_ERR_TIMEOUT;
-  if (wait_for_level(1, 100) == -1)
-    return ESP_ERR_TIMEOUT;
-
-  // 2. High-Precision Bit Capture
-  portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
-  portENTER_CRITICAL(&myMutex);
-
-  for (int i = 0; i < 40; i++) {
-    if (wait_for_level(0, 100) == -1) {
-      portEXIT_CRITICAL(&myMutex);
-      return ESP_ERR_TIMEOUT;
-    }
-    time_start = esp_timer_get_time();
-    while (gpio_get_level(DHT_PIN) == 1) {
-      if ((esp_timer_get_time() - time_start) > 100)
-        break;
-    }
-    if ((esp_timer_get_time() - time_start) > 40) {
-      data[i / 8] |= (1 << (7 - (i % 8)));
-    }
-  }
-  portEXIT_CRITICAL(&myMutex);
-
-  // 3. Math & Checksum
-  if (data[4] == ((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
-    *humidity = ((data[0] << 8) + data[1]) / 10.0;
-    float temp = (((data[2] & 0x7F) << 8) + data[3]) / 10.0;
-    if (data[2] & 0x80)
-      temp *= -1;
-    *temperature = temp;
-    return ESP_OK;
-  }
-  return ESP_ERR_INVALID_CRC;
 }
 
 /* ── NVS helpers ────────────────────────────────────────────────────────────
@@ -506,26 +447,79 @@ static void channel_scan_task(void *arg) {
 
 /* ── Event task ─────────────────────────────────────────────────────────────
  */
+static const char *reed_payload_for_level(int level) {
+  return level == 0 ? "door_close" : "door_open";
+}
+
+static const char *reed_label_for_level(int level) {
+  return level == 0 ? "CLOSED - magnet detected" : "OPEN - no magnet";
+}
+
+static void reed_gpio_isr_handler(void *arg) {
+  uint32_t event = 1;
+  BaseType_t high_task_woken = pdFALSE;
+
+  if (s_reed_event_queue) {
+    xQueueSendFromISR(s_reed_event_queue, &event, &high_task_woken);
+  }
+
+  if (high_task_woken == pdTRUE) {
+    portYIELD_FROM_ISR();
+  }
+}
+
+static void send_reed_state_event(int reed_level) {
+  espnow_packet_t pkt = {.type = PKT_EVENT};
+  snprintf(pkt.payload, sizeof(pkt.payload), "%s",
+           reed_payload_for_level(reed_level));
+
+  ESP_LOGI(TAG, "REED SEND: GPIO%d=%d, state=%s, payload=%s",
+           (int)REED_GPIO, reed_level, reed_label_for_level(reed_level),
+           pkt.payload);
+
+  esp_err_t err = esp_now_send(s_hub_mac_bytes, (uint8_t *)&pkt, sizeof(pkt));
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "REED SEND OK: %s queued to hub", pkt.payload);
+  } else {
+    ESP_LOGW(TAG, "REED SEND FAILED: %s queue error: %s", pkt.payload,
+             esp_err_to_name(err));
+  }
+}
+
 static void event_task(void *arg) {
-  float hum, temp;
+  uint32_t event;
+  int last_state = -1;
+
+  ESP_LOGI(TAG, "REED TASK: waiting for ESP-NOW pairing before sending events");
+  while (!s_hub_paired) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+
+  last_state = gpio_get_level(REED_GPIO);
+  ESP_LOGI(TAG, "REED INITIAL: GPIO%d=%d, state=%s", (int)REED_GPIO,
+           last_state, reed_label_for_level(last_state));
+  send_reed_state_event(last_state);
+
   while (1) {
-    vTaskDelay(pdMS_TO_TICKS(10000)); // Read every 10s
-    if (!s_hub_paired)
+    if (xQueueReceive(s_reed_event_queue, &event, portMAX_DELAY) != pdTRUE) {
       continue;
+    }
 
-    if (read_dht22(&hum, &temp) == ESP_OK) {
-      espnow_packet_t pkt = {.type = PKT_EVENT};
-      // Format: "T:25.4,H:60.2"
-      snprintf(pkt.payload, sizeof(pkt.payload), "Temp: %.1f, Hum: %.1f", temp,
-               hum);
+    vTaskDelay(pdMS_TO_TICKS(REED_DEBOUNCE_MS));
+    int state = gpio_get_level(REED_GPIO);
+    if (state == last_state) {
+      ESP_LOGI(TAG, "REED DEBOUNCE: GPIO%d still %d (%s), no event sent",
+               (int)REED_GPIO, state, reed_label_for_level(state));
+      continue;
+    }
 
-      esp_err_t err =
-          esp_now_send(s_hub_mac_bytes, (uint8_t *)&pkt, sizeof(pkt));
-      if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Sent DHT: %s", pkt.payload);
-      }
+    ESP_LOGI(TAG, "REED CHANGE: GPIO%d %d -> %d, state=%s", (int)REED_GPIO,
+             last_state, state, reed_label_for_level(state));
+    last_state = state;
+    if (s_hub_paired) {
+      send_reed_state_event(state);
     } else {
-      ESP_LOGE(TAG, "DHT reading failed");
+      ESP_LOGW(TAG, "REED CHANGE DROPPED: hub is not paired");
     }
   }
 }
@@ -689,15 +683,27 @@ void app_main(void) {
   };
   gpio_config(&io);
 
-  // Initialize DHT22 Pin[cite: 1]
-  gpio_config_t dht_io = {
-      .pin_bit_mask = (1ULL << DHT_PIN),
-      .mode = GPIO_MODE_INPUT_OUTPUT_OD,
-      .pull_up_en = GPIO_PULLUP_DISABLE,
+  s_reed_event_queue = xQueueCreate(REED_EVENT_QUEUE_DEPTH, sizeof(uint32_t));
+  if (!s_reed_event_queue) {
+    ESP_LOGE(TAG, "Failed to create reed event queue");
+    abort();
+  }
+
+  gpio_config_t reed_io = {
+      .pin_bit_mask = (1ULL << REED_GPIO),
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_DISABLE,
+      .intr_type = GPIO_INTR_ANYEDGE,
   };
-  gpio_config(&dht_io);
+  ESP_ERROR_CHECK(gpio_config(&reed_io));
+  ESP_ERROR_CHECK(gpio_install_isr_service(0));
+  ESP_ERROR_CHECK(gpio_isr_handler_add(REED_GPIO, reed_gpio_isr_handler, NULL));
+  int reed_boot_level = gpio_get_level(REED_GPIO);
+  ESP_LOGI(TAG, "REED SETUP: GPIO%d input with internal pull-up, interrupt on both edges",
+           (int)REED_GPIO);
+  ESP_LOGI(TAG, "REED SETUP: initial GPIO%d=%d, state=%s", (int)REED_GPIO,
+           reed_boot_level, reed_label_for_level(reed_boot_level));
 
   s_ble_done_sem = xSemaphoreCreateBinary();
 
