@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glazia Hub — Ocean Night Final</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #030C18; }
+    #root { width: 100%; height: 100%; }
+    @keyframes pulse    { 0%,100%{opacity:1;transform:scale(1)}  50%{opacity:.4;transform:scale(.84)} }
+    @keyframes ringpop  { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:.07;transform:scale(1.1)} }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// ── Tokens ────────────────────────────────────────────────────────────────────
+const OC='#38BDF8', VI='#A78BFA', GR='#34D399', AM='#FCD34D', DA='#F87171';
+const T1='rgba(255,255,255,0.94)', T2='rgba(255,255,255,0.56)', T3='rgba(255,255,255,0.28)';
+const MONO="'Space Mono','Courier New',monospace", SANS="'DM Sans',-apple-system,sans-serif";
+
+const BG=`radial-gradient(ellipse at 22% 14%,rgba(14,165,233,.22) 0%,transparent 52%),
+ radial-gradient(ellipse at 80% 80%,rgba(167,139,250,.16) 0%,transparent 48%),
+ radial-gradient(ellipse at 50% 100%,rgba(52,211,153,.07) 0%,transparent 38%),
+ linear-gradient(158deg,#071828 0%,#060F20 55%,#04091A 100%)`;
+
+const gl=(x={})=>({background:'rgba(255,255,255,.076)',backdropFilter:'blur(26px)',
+  WebkitBackdropFilter:'blur(26px)',border:'1px solid rgba(255,255,255,.14)',
+  boxShadow:'0 6px 28px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.13)',...x});
+
+// ── Speedometer Gauge — gap at BOTTOM (START=225, gap between 225° and 315°) ─
+function BottomGauge({value,min,max,unit,size=70,fill=OC,alertLevel='ok'}){
+  const Rg=size*.405, cx=size/2, cy=Rg+6, START=225, SWEEP=270;
+  const rad=d=>d*Math.PI/180;
+  const nv=parseFloat(value);
+  const pct=isNaN(nv)?0:Math.max(0,Math.min(1,(nv-min)/(max-min)));
+  const arc=(sDeg,swp,r)=>{
+    if(swp<=0)return'';if(swp>=360)swp=359.99;
+    const s=rad(sDeg-90),e=rad(sDeg+swp-90);
+    const x1=cx+r*Math.cos(s),y1=cy+r*Math.sin(s),x2=cx+r*Math.cos(e),y2=cy+r*Math.sin(e);
+    return`M${x1.toFixed(2)},${y1.toFixed(2)}A${r},${r},0,${swp>180?1:0},1,${x2.toFixed(2)},${y2.toFixed(2)}`;
+  };
+  const ticks=Array.from({length:9},(_,i)=>{
+    const deg=START+(i/8)*SWEEP,r_=rad(deg-90);
+    return{x1:(cx+(Rg-1)*Math.cos(r_)).toFixed(2),y1:(cy+(Rg-1)*Math.sin(r_)).toFixed(2),
+           x2:(cx+(Rg-6.5)*Math.cos(r_)).toFixed(2),y2:(cy+(Rg-6.5)*Math.sin(r_)).toFixed(2),lit:pct>0&&i/8<=pct+.01};
+  });
+  const fc=alertLevel==='critical'?DA:fill;
+  const fid=`bg${size}${fill.replace('#','')}`;
+  const arcBotY=cy+Rg*Math.sin(rad(135));
+  const svgH=Math.ceil(arcBotY+13);
+  const arcSX=cx+Rg*Math.cos(rad(135)), arcEX=cx+Rg*Math.cos(rad(45));
+  return(
+    <svg width={size} height={svgH} viewBox={`0 0 ${size} ${svgH}`} style={{display:'block',flexShrink:0}}>
+      <defs><filter id={fid} x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter></defs>
+      <path d={arc(START,SWEEP,Rg)} fill="none" stroke="rgba(255,255,255,.09)" strokeWidth="6.5" strokeLinecap="round"/>
+      {pct>0&&<path d={arc(START,pct*SWEEP,Rg)} fill="none" stroke={fc} strokeWidth="6.5" strokeLinecap="round" filter={`url(#${fid})`}/>}
+      {ticks.map((t,i)=>(<line key={i} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+        stroke={t.lit?fc+'88':'rgba(255,255,255,.11)'} strokeWidth="1.3" strokeLinecap="round"/>))}
+      <text x={cx} y={cy} dominantBaseline="middle" textAnchor="middle" fontFamily={MONO}
+        fontSize={size*.25} fontWeight="700" fill={isNaN(nv)?T3:T1}>{value}</text>
+      <text x={cx} y={cy+size*.22} dominantBaseline="middle" textAnchor="middle" fontFamily={SANS}
+        fontSize={size*.115} fill={T3}>{unit}</text>
+      <text x={arcSX} y={arcBotY+11} textAnchor="middle" fontFamily={SANS} fontSize="7.5" fill={T3}>{min}</text>
+      <text x={arcEX} y={arcBotY+11} textAnchor="middle" fontFamily={SANS} fontSize="7.5" fill={T3}>{max}</text>
+    </svg>
+  );
+}
+
+// ── Humidity bar ──────────────────────────────────────────────────────────────
+function HBar({value,max=100,colors=[VI,OC],offline=false}){
+  const pct=offline?0:Math.max(0,Math.min(100,(value/max)*100));
+  return(
+    <div style={{width:'100%'}}>
+      <div style={{display:'flex',alignItems:'baseline',gap:3,marginBottom:7}}>
+        <span style={{fontFamily:MONO,fontSize:20,fontWeight:700,color:offline?T3:T1}}>{offline?'--':value}</span>
+        <span style={{fontFamily:SANS,fontSize:10,color:T3}}>%</span>
+      </div>
+      <div style={{height:5,background:'rgba(255,255,255,.09)',borderRadius:3,overflow:'hidden'}}>
+        <div style={{height:'100%',width:`${pct}%`,borderRadius:3,
+          background:`linear-gradient(90deg,${colors[0]} 0%,${colors[1]} 100%)`,
+          boxShadow:`0 0 8px ${colors[0]}60`}}></div>
+      </div>
+    </div>
+  );
+}
+
+// ── Chip ──────────────────────────────────────────────────────────────────────
+function Chip({label,level='ok'}){
+  const m={ok:{bg:`${OC}18`,txt:OC+'EE',dot:OC},warn:{bg:`${AM}18`,txt:'#FDE68A',dot:AM},
+    warm:{bg:`${AM}18`,txt:'#FDE68A',dot:AM},critical:{bg:`${DA}18`,txt:'#FCA5A5',dot:DA},
+    off:{bg:'rgba(255,255,255,.07)',txt:T3,dot:'rgba(255,255,255,.22)'}};
+  const s=m[level]||m.ok;
+  return(<div style={{display:'inline-flex',alignItems:'center',gap:4,background:s.bg,color:s.txt,
+    borderRadius:20,padding:'2px 9px',fontFamily:SANS,fontSize:9.5,fontWeight:600,flexShrink:0}}>
+    <span style={{width:4,height:4,borderRadius:'50%',background:s.dot,display:'inline-block'}}></span>{label}
+  </div>);
+}
+
+// ── Status Pill (online / offline variant) ────────────────────────────────────
+function StatusPill({online=true}){
+  const dot=online?GR:DA, text=online?'Online · HUB_loc':'Offline';
+  const tc=online?'#86EFAC':'#FCA5A5';
+  return(<div style={{display:'inline-flex',alignItems:'center',gap:4,
+    fontFamily:SANS,fontSize:9,fontWeight:600,color:tc}}>
+    <span style={{width:5,height:5,borderRadius:'50%',background:dot,display:'inline-block',flexShrink:0,
+      boxShadow:`0 0 5px ${dot}80`,animation:online?'pulse 2.4s ease-in-out infinite':undefined}}></span>
+    {text}
+  </div>);
+}
+
+// ── Toggle ────────────────────────────────────────────────────────────────────
+function Tog({on=true,color=OC}){
+  return(<div style={{width:44,height:24,borderRadius:12,background:on?color:'rgba(255,255,255,.16)',
+    boxShadow:on?`0 0 14px ${color}55`:undefined,position:'relative',flexShrink:0}}>
+    <div style={{width:18,height:18,borderRadius:'50%',background:'#FFF',boxShadow:'0 1px 4px rgba(0,0,0,.45)',
+      position:'absolute',top:3,left:on?22:3,transition:'left .2s'}}></div>
+  </div>);
+}
+
+// ── Logo ──────────────────────────────────────────────────────────────────────
+function Logo({size=36}){
+  return(<div style={{width:size,height:size,borderRadius:size*.2,flexShrink:0,position:'relative',overflow:'hidden',
+    background:'linear-gradient(145deg,#9a9a9a 0%,#4c4c4c 40%,#787878 65%,#303030 100%)',
+    display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+    boxShadow:'inset 0 1px 2px rgba(255,255,255,.22),0 3px 12px rgba(0,0,0,.65)'}}>
+    <div style={{position:'absolute',top:0,left:0,right:0,height:'42%',
+      background:'linear-gradient(180deg,rgba(255,255,255,.18) 0%,transparent 100%)',pointerEvents:'none'}}></div>
+    <span style={{fontFamily:'"Georgia","Times New Roman",serif',fontSize:size*.5,fontWeight:900,
+      color:'#fff',textShadow:'0 1px 4px rgba(0,0,0,.7)',letterSpacing:-1,lineHeight:1,marginBottom:1}}>G</span>
+    <span style={{fontFamily:SANS,fontSize:size*.165,color:'rgba(255,255,255,.80)',
+      fontWeight:700,letterSpacing:size*.04,lineHeight:1}}>GLAZIA</span>
+  </div>);
+}
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+const IThermo=({s=12,c=OC})=>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><path d="M12 14V5a2 2 0 0 0-4 0v9a4 4 0 1 0 4 0z" stroke={c} strokeWidth="1.8" strokeLinejoin="round"/><circle cx="10" cy="18" r="2.2" fill={c}/></svg>);
+const IDrop  =({s=12,c=VI}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><path d="M12 3C12 3 5 10.5 5 15a7 7 0 0 0 14 0c0-4.5-7-12-7-12z" stroke={c} strokeWidth="1.8" strokeLinejoin="round"/></svg>);
+const IBack  =({s=14,c=OC}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><path d="M15 18l-6-6 6-6" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>);
+const IChev  =()             =>(<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M9 18l6-6-6-6" stroke={T3} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>);
+const IFinger=({s=18,c=OC}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><path d="M12 2C9.2 2 6.8 3.3 5.2 5.4" stroke={c} strokeWidth="1.5" strokeLinecap="round"/><path d="M18.8 5.4C17.2 3.3 14.8 2 12 2" stroke={c} strokeWidth="1.5" strokeLinecap="round"/><path d="M4 9.6C4 8.3 4.4 7.1 5 6.1" stroke={c} strokeWidth="1.5" strokeLinecap="round"/><path d="M19 6.1c.6 1 1 2.2 1 3.5" stroke={c} strokeWidth="1.5" strokeLinecap="round"/><path d="M8 10c0-2.2 1.8-4 4-4s4 1.8 4 4v1c0 3-1.8 5.5-4 7" stroke={c} strokeWidth="1.5" strokeLinecap="round"/><path d="M10 10.5v2.5c0 2.5 1 4 2 5.5" stroke={c} strokeWidth="1.5" strokeLinecap="round"/></svg>);
+const INodes =({s=18,c=OC}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2.5" stroke={c} strokeWidth="1.6"/><circle cx="5" cy="19" r="2.5" stroke={c} strokeWidth="1.6"/><circle cx="19" cy="19" r="2.5" stroke={c} strokeWidth="1.6"/><path d="M12 7.5v4M12 11.5L5 16.5M12 11.5L19 16.5" stroke={c} strokeWidth="1.6" strokeLinecap="round"/></svg>);
+const IInfo  =({s=18,c=VI}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke={c} strokeWidth="1.6"/><path d="M12 11v5" stroke={c} strokeWidth="2" strokeLinecap="round"/><circle cx="12" cy="8" r="1" fill={c}/></svg>);
+const IWifi  =({s=13,c=OC}) =>(<svg width={s} height={s*.85} viewBox="0 0 16 14" fill="none"><circle cx="8" cy="13" r="1.2" fill={c}/><path d="M5.2 10.4C6 9.5 6.9 9 8 9s2 .5 2.8 1.4" stroke={c} strokeWidth="1.4" strokeLinecap="round"/><path d="M2.8 7.8C4.3 6.1 6 5 8 5s3.7 1.1 5.2 2.8" stroke={c} strokeWidth="1.4" strokeLinecap="round"/><path d="M.6 5.4C2.7 2.8 5.2 1 8 1s5.3 1.8 7.4 4.4" stroke={c} strokeWidth="1.4" strokeLinecap="round"/></svg>);
+const IPlus  =({s=14,c=OC}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke={c} strokeWidth="2.2" strokeLinecap="round"/></svg>);
+const IGear  =({s=12,c='#03080F'})=>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.2" stroke={c} strokeWidth="1.8"/><path d="M12 2v2.2M12 19.8V22M2 12h2.2M19.8 12H22M4.93 4.93l1.56 1.56M17.51 17.51l1.56 1.56M19.07 4.93l-1.56 1.56M6.49 17.51l-1.56 1.56" stroke={c} strokeWidth="1.7" strokeLinecap="round"/></svg>);
+const ICheck =({s=28,c=GR}) =>(<svg width={s} height={s} viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke={c} strokeWidth="1.5" strokeOpacity=".35"/><path d="M7 12.5l3.5 3.5L17 9" stroke={c} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>);
+
+// ── Page wrapper ──────────────────────────────────────────────────────────────
+function Page({children}){
+  return(<div style={{width:240,height:320,background:BG,fontFamily:SANS,overflow:'hidden',
+    display:'flex',flexDirection:'column',padding:8,gap:6,position:'relative'}}>
+    <div style={{position:'absolute',top:-50,left:-30,width:160,height:160,borderRadius:'50%',
+      background:`radial-gradient(circle,${OC}1E 0%,transparent 70%)`,pointerEvents:'none'}}/>
+    <div style={{position:'absolute',bottom:-50,right:-30,width:150,height:150,borderRadius:'50%',
+      background:`radial-gradient(circle,${VI}18 0%,transparent 70%)`,pointerEvents:'none'}}/>
+    {children}
+  </div>);
+}
+
+// ── Nav bar ───────────────────────────────────────────────────────────────────
+function Nav({title,accent=OC}){
+  return(<div style={gl({borderRadius:13,padding:'7px 10px',display:'flex',alignItems:'center',gap:8,flexShrink:0})}>
+    <div style={gl({width:27,height:27,borderRadius:8,display:'flex',alignItems:'center',
+      justifyContent:'center',cursor:'pointer',flexShrink:0,boxShadow:'none'})}>
+      <IBack s={14} c={accent}/>
+    </div>
+    <div style={{flex:1,textAlign:'center',fontFamily:SANS,fontSize:14,fontWeight:700,color:T1,letterSpacing:-.3}}>{title}</div>
+    <div style={{width:27}}></div>
+  </div>);
+}
+
+// ── Shared home header ────────────────────────────────────────────────────────
+function HomeHdr({time='08:42',date='Mon 08 Jun',online=true}){
+  return(<div style={gl({borderRadius:13,padding:'7px 11px',display:'flex',alignItems:'center',gap:10,flexShrink:0})}>
+    <Logo size={36}/>
+    <div style={{flex:1,minWidth:0}}>
+      <div style={{fontSize:13.5,fontWeight:700,color:T1,letterSpacing:-.3,lineHeight:1.15}}>Welcome, user</div>
+      <div style={{marginTop:3}}><StatusPill online={online}/></div>
+    </div>
+    <div style={{textAlign:'right',flexShrink:0}}>
+      <div style={{fontFamily:MONO,fontSize:14,fontWeight:700,color:T1,letterSpacing:-.6,lineHeight:1}}>{time}</div>
+      <div style={{fontSize:8,color:T3,marginTop:2}}>{date}</div>
+    </div>
+  </div>);
+}
+
+// ── Temperature card (full-width, stacked top) ──────────────────────────────
+function TempCard({value='24.6',level='ok'}){
+  const fill=level==='critical'?DA:OC;
+  const label={ok:'Comfortable',critical:'Too Hot!'}[level]||'Comfortable';
+  return(<div style={gl({borderRadius:13,padding:'7px 8px',flex:1,
+    display:'flex',flexDirection:'column',alignItems:'center',
+    ...(level==='critical'?{background:DA+'0C',border:'1px solid '+DA+'22'}:{})})}>
+    <div style={{display:'flex',alignItems:'center',gap:4,width:'100%',marginBottom:3}}>
+      <IThermo s={11} c={fill}/>
+      <span style={{fontFamily:SANS,fontSize:8,fontWeight:700,color:T2,letterSpacing:1,textTransform:'uppercase'}}>Temperature</span>
+    </div>
+    <BottomGauge value={value} min={0} max={50} unit="°C" size={64} fill={fill} alertLevel={level}/>
+    <div style={{marginTop:4}}><Chip label={label} level={level}/></div>
+  </div>);
+}
+
+// ── Humidity card (full-width bar below temp) ─────────────────────────────────
+function HumCard({value=56,level='ok'}){
+  const colors=level==='warm'?[AM,DA]:[VI,OC];
+  const label={ok:'Moderate',warm:'Very High'}[level]||'Moderate';
+  const acc=level==='warm'?AM:VI;
+  const pct=Math.max(0,Math.min(100,value));
+  return(<div style={gl({borderRadius:13,padding:'8px 12px',flexShrink:0,
+    display:'flex',alignItems:'center',gap:9,
+    ...(level==='warm'?{background:AM+'0C',border:'1px solid '+AM+'22'}:{})})}>
+    <IDrop s={13} c={acc}/>
+    <div style={{flex:1,minWidth:0}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:5}}>
+        <span style={{fontFamily:SANS,fontSize:8,fontWeight:700,color:T2,letterSpacing:1,textTransform:'uppercase'}}>Humidity</span>
+        <span style={{fontFamily:MONO,fontSize:14,fontWeight:700,color:T1,letterSpacing:'-.3px'}}>{value}<span style={{fontSize:8.5,fontFamily:SANS,color:T3}}>%</span></span>
+      </div>
+      <div style={{height:5,background:'rgba(255,255,255,.09)',borderRadius:3,overflow:'hidden'}}>
+        <div style={{height:'100%',width:pct+'%',borderRadius:3,
+          background:'linear-gradient(90deg,'+colors[0]+' 0%,'+colors[1]+' 100%)',
+          boxShadow:'0 0 8px '+colors[0]+'60'}}></div>
+      </div>
+    </div>
+    <Chip label={label} level={level}/>
+  </div>);
+}
+
+// ── Sensor nodes strip ────────────────────────────────────────────────────────
+function NodesStrip({count=3,offline=false}){
+  const c=offline?DA:OC;
+  const label=offline?'0 nodes active · Sensors disconnected':count+' sensor nodes active';
+  return(<div style={gl({borderRadius:11,height:24,padding:'0 11px',display:'flex',alignItems:'center',gap:7,flexShrink:0})}>
+    <div style={{width:5,height:5,borderRadius:'50%',background:c,flexShrink:0,boxShadow:'0 0 5px '+c+'80'}}></div>
+    <span style={{fontSize:9,fontWeight:600,color:offline?DA+'CC':T2,flex:1}}>{label}</span>
+    {!offline&&<span style={{fontFamily:MONO,fontSize:8,color:T3}}>Mon 08 Jun</span>}
+  </div>);
+}
+
+// ── Shared bottom action bar ──────────────────────────────────────────────────
+function BotBar({systemOn=true,accent=OC}){
+  return(<div style={gl({borderRadius:13,padding:'0 12px',height:38,display:'flex',
+    alignItems:'center',gap:9,flexShrink:0})}>
+    <Tog on={systemOn} color={accent}/>
+    <span style={{fontSize:10,color:T2,fontWeight:500,flex:1}}>System Active</span>
+    <div style={{display:'flex',alignItems:'center',gap:5,background:accent,color:'#03080F',
+      borderRadius:9,padding:'0 13px',height:28,fontSize:12,fontWeight:700,cursor:'pointer',
+      boxShadow:`0 0 16px ${accent}50`}}>
+      <IGear s={11} c="#03080F"/><span>Settings</span>
+    </div>
+  </div>);
+}
+
+
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 1 — Home · Online
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function HomeOnline(){
+  return(<Page>
+    <HomeHdr online={true}/>
+    <NodesStrip count={3}/>
+    <TempCard value="24.6" level="ok"/>
+    <HumCard value={56} level="ok"/>
+    <BotBar/>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 2 — Home · Offline
+// Hub's DHT22 still reads — only pill + nodes strip change
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function HomeOffline(){
+  return(<Page>
+    <HomeHdr online={false}/>
+    <NodesStrip count={0} offline={true}/>
+    <TempCard value="24.6" level="ok"/>
+    <HumCard value={56} level="ok"/>
+    <BotBar/>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 3 — Home · High Temp (no banner — gauge + chip only)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function HomeAlert(){
+  return(<Page>
+    <HomeHdr time="14:17" online={true}/>
+    <NodesStrip count={3}/>
+    <TempCard value="42.1" level="critical"/>
+    <HumCard value={78} level="warm"/>
+    <BotBar/>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 4 — Settings
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function Settings(){
+  const rows=[
+    {Icon:IFinger,col:OC,title:'Add Another Fingerprint',sub:'Register a new fingerprint'},
+    {Icon:INodes, col:VI,title:'Sensor Nodes',            sub:'Manage and configure sensors'},
+    {Icon:IInfo,  col:VI,title:'About',                   sub:'Learn more about Glazia'},
+  ];
+  return(<Page>
+    <Nav title="Settings"/>
+    <div style={{flex:1,display:'flex',flexDirection:'column',gap:8}}>
+      {rows.map(({Icon,col,title,sub},i)=>(
+        <div key={i} style={gl({borderRadius:13,padding:'11px 13px',flex:'1 1 0',
+          display:'flex',alignItems:'center',gap:11,cursor:'pointer'})}>
+          <div style={{width:38,height:38,borderRadius:10,background:`${col}16`,
+            border:`1px solid ${col}2A`,display:'flex',alignItems:'center',justifyContent:'center',
+            flexShrink:0,boxShadow:`0 0 12px ${col}1E`}}><Icon s={19} c={col}/></div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:12,fontWeight:700,color:T1,lineHeight:1.3}}>{title}</div>
+            <div style={{fontSize:9.5,color:T3,marginTop:2}}>{sub}</div>
+          </div>
+          <IChev/>
+        </div>
+      ))}
+    </div>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 5 — Sensor Nodes
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function SensorNodes(){
+  const nodes=[{n:'sensor_loc_1',on:true},{n:'sensor_loc_2',on:true},
+               {n:'sensor_loc_3',on:false},{n:'sensor_loc_4',on:true}];
+  return(<Page>
+    <Nav title="Sensor Nodes"/>
+    <div style={{fontSize:9.5,color:T3,padding:'0 2px',flexShrink:0}}>Enable or disable sensor nodes as needed.</div>
+    <div style={{flex:1,display:'flex',flexDirection:'column',gap:5}}>
+      {nodes.map(({n,on},i)=>(
+        <div key={i} style={gl({borderRadius:12,padding:'6px 12px',flex:'1 1 0',
+          display:'flex',alignItems:'center',gap:10})}>
+          <div style={{width:30,height:30,borderRadius:8,display:'flex',alignItems:'center',
+            justifyContent:'center',flexShrink:0,
+            background:on?`${OC}16`:'rgba(255,255,255,.05)',
+            border:`1px solid ${on?OC+'28':'rgba(255,255,255,.08)'}`,
+            boxShadow:on?`0 0 10px ${OC}22`:undefined}}>
+            <IWifi s={13} c={on?OC:'rgba(255,255,255,.22)'}/>
+          </div>
+          <div style={{flex:1,fontFamily:MONO,fontSize:10.5,fontWeight:700,
+            color:on?T1:T3,letterSpacing:-.3}}>{n}</div>
+          <Tog on={on} color={OC}/>
+        </div>
+      ))}
+    </div>
+    {/* Add Another Sensor button */}
+    <div style={gl({borderRadius:12,height:34,padding:'0 14px',display:'flex',alignItems:'center',
+      gap:9,cursor:'pointer',flexShrink:0,background:`${OC}10`,border:`1px solid ${OC}28`})}>
+      <div style={{width:22,height:22,borderRadius:6,background:`${OC}20`,display:'flex',
+        alignItems:'center',justifyContent:'center',flexShrink:0}}><IPlus s={12} c={OC}/></div>
+      <span style={{fontSize:12,fontWeight:700,color:OC,flex:1}}>Add Another Sensor</span>
+      <IChev/>
+    </div>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 6 — About (single text card)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function About(){
+  return(<Page>
+    <Nav title="About" accent={VI}/>
+    {/* Logo + heading */}
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:5,flexShrink:0}}>
+      <Logo size={44}/>
+      <span style={{fontSize:14,fontWeight:700,color:T1,letterSpacing:-.3}}>About Glazia</span>
+    </div>
+    {/* Single merged text card — copyright lives inside */}
+    <div style={gl({borderRadius:13,flex:1,padding:'11px 16px',display:'flex',flexDirection:'column',justifyContent:'space-between'})}>
+      <p style={{margin:'0 0 9px',fontSize:10,color:T2,lineHeight:1.75,textAlign:'center'}}>
+        Glazia is dedicated to creating smart, reliable, and elegant IoT solutions for modern living and workplaces.
+      </p>
+      <p style={{margin:0,fontSize:10,color:T2,lineHeight:1.75,textAlign:'center'}}>
+        Our mission is to connect spaces, simplify control, and empower users through intelligent technology — making everyday environments smarter and more responsive.
+      </p>
+      <div style={{textAlign:'center',paddingTop:9}}>
+        <span style={{fontSize:8.5,color:T3}}>© 2024 Glazia Technologies · All rights reserved.</span>
+      </div>
+    </div>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 7 — Add Fingerprint
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function AddFingerprint(){
+  const step=3,total=5;
+  return(<Page>
+    <Nav title="Add Fingerprint"/>
+    <div style={gl({borderRadius:14,flex:1,display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',padding:'10px 16px',gap:11})}>
+      {/* Pulsing rings */}
+      <div style={{position:'relative',width:96,height:96,display:'flex',alignItems:'center',
+        justifyContent:'center',flexShrink:0}}>
+        {[96,74,54].map((sz,i)=>( 
+          <div key={i} style={{position:'absolute',width:sz,height:sz,borderRadius:'50%',
+            border:`1.5px solid ${OC}`,
+            animationName:'ringpop',animationDuration:`${1.9+i*.45}s`,
+            animationTimingFunction:'ease-in-out',animationIterationCount:'infinite',
+            animationDelay:`${i*.32}s`}}></div>
+        ))}
+        <div style={{width:46,height:46,borderRadius:'50%',background:`${OC}14`,
+          border:`2px solid ${OC}`,display:'flex',alignItems:'center',justifyContent:'center',
+          boxShadow:`0 0 20px ${OC}45`,position:'relative',zIndex:1}}>
+          <IFinger s={23} c={OC}/>
+        </div>
+      </div>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:13,fontWeight:700,color:T1,letterSpacing:-.2,lineHeight:1.3}}>
+          Place your finger<br/>on the sensor
+        </div>
+        <div style={{fontSize:9.5,color:T3,marginTop:6,lineHeight:1.6}}>
+          Lift and place your finger repeatedly<br/>until enrollment is complete.
+        </div>
+      </div>
+      {/* Progress dots */}
+      <div style={{display:'flex',gap:9,alignItems:'center'}}>
+        {Array.from({length:total},(_,i)=>(
+          <div key={i} style={{width:i<step?10:6,height:i<step?10:6,borderRadius:'50%',
+            background:i<step?OC:'rgba(255,255,255,.18)',
+            boxShadow:i===step-1?`0 0 0 3.5px ${OC}2C`:undefined}}></div>
+        ))}
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:6}}>
+        <div style={{width:7,height:7,borderRadius:'50%',background:OC,
+          animation:'pulse 1.2s ease-in-out infinite'}}></div>
+        <span style={{fontFamily:MONO,fontSize:10,color:T2}}>Processing...</span>
+      </div>
+    </div>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 8 — Add Sensor
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function AddSensor(){
+  return(<Page>
+    <Nav title="Add Sensor" accent={OC}/>
+    <div style={gl({borderRadius:13,flex:1,display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',padding:'14px 18px',gap:14})}>
+      {/* Icon */}
+      <div style={{width:60,height:60,borderRadius:16,background:`${OC}16`,
+        border:`1.5px solid ${OC}28`,display:'flex',alignItems:'center',justifyContent:'center',
+        boxShadow:`0 0 20px ${OC}25`}}>
+        <INodes s={28} c={OC}/>
+      </div>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:13,fontWeight:700,color:T1,lineHeight:1.4,marginBottom:10}}>
+          Register a New Sensor
+        </div>
+        <div style={{fontSize:10.5,color:T2,lineHeight:1.75}}>
+          Register the desired sensor to the Server first. Once done, press the Add Sensor button below.
+        </div>
+      </div>
+    </div>
+    {/* Prominent red Add Sensor button */}
+    <div style={{background:DA,borderRadius:13,height:42,display:'flex',alignItems:'center',
+      justifyContent:'center',gap:8,cursor:'pointer',flexShrink:0,
+      boxShadow:`0 0 22px ${DA}50`}}>
+      <IPlus s={15} c="#FFF"/>
+      <span style={{fontSize:14,fontWeight:700,color:'#FFF',letterSpacing:.1}}>Add Sensor</span>
+    </div>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SCREEN 9 — Add Sensor · Confirmed
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function AddSensorDone(){
+  return(<Page>
+    <Nav title="Add Sensor" accent={GR}/>
+    <div style={gl({borderRadius:13,flex:1,display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',padding:'13px 16px',gap:11})}>
+      {/* Checkmark */}
+      <div style={{width:56,height:56,borderRadius:'50%',background:`${GR}14`,
+        border:`2px solid ${GR}30`,display:'flex',alignItems:'center',justifyContent:'center',
+        boxShadow:`0 0 20px ${GR}30`}}>
+        <ICheck s={28} c={GR}/>
+      </div>
+      <div style={{textAlign:'center',display:'flex',flexDirection:'column',gap:8}}>
+        <div style={{fontSize:16,fontWeight:700,color:T1,letterSpacing:-.2}}>Sensor Added!</div>
+        <div style={gl({borderRadius:11,padding:'9px 16px',background:`${GR}0C`,border:`1px solid ${GR}22`})}>
+          <span style={{fontFamily:MONO,fontSize:12,fontWeight:700,color:GR+'EE'}}>sensor_loc_k</span>
+          <span style={{fontSize:11,color:T2}}> has been added</span>
+        </div>
+        <div style={{fontSize:10,color:T3,lineHeight:1.6}}>
+          The sensor is now registered and will appear in your Sensor Nodes list.
+        </div>
+      </div>
+    </div>
+    {/* Done button */}
+    <div style={{background:GR,borderRadius:13,height:40,display:'flex',alignItems:'center',
+      justifyContent:'center',cursor:'pointer',flexShrink:0,boxShadow:`0 0 20px ${GR}40`}}>
+      <span style={{fontSize:14,fontWeight:700,color:'#03201A',letterSpacing:.1}}>Done</span>
+    </div>
+  </Page>);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// APP
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function App(){
+  return(
+    <DesignCanvas>
+      <DCSection id="home" title="Home Screen — Ocean Night"
+        subtitle="Online · Offline pill variant · Alert state — all fixed, nothing cut off">
+        <DCArtboard id="h1" label="Home · Online"              width={240} height={320}><HomeOnline/></DCArtboard>
+        <DCArtboard id="h2" label="Home · Offline (pill state)" width={240} height={320}><HomeOffline/></DCArtboard>
+        <DCArtboard id="h3" label="Home · Alert State"          width={240} height={320}><HomeAlert/></DCArtboard>
+      </DCSection>
+      <DCSection id="screens" title="All Screens — Ocean Night"
+        subtitle="Settings · Sensor Nodes · About · Add Fingerprint · Add Sensor · Confirmation">
+        <DCArtboard id="s1" label="Settings"               width={240} height={320}><Settings/></DCArtboard>
+        <DCArtboard id="s2" label="Sensor Nodes"           width={240} height={320}><SensorNodes/></DCArtboard>
+        <DCArtboard id="s3" label="About"                  width={240} height={320}><About/></DCArtboard>
+        <DCArtboard id="s4" label="Add Fingerprint"        width={240} height={320}><AddFingerprint/></DCArtboard>
+        <DCArtboard id="s5" label="Add Sensor"             width={240} height={320}><AddSensor/></DCArtboard>
+        <DCArtboard id="s6" label="Add Sensor · Confirmed" width={240} height={320}><AddSensorDone/></DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

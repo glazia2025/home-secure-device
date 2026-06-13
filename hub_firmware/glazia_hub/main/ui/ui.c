@@ -31,9 +31,6 @@ void ui_ensure_screen(enum ScreensEnum screenId) {
     case SCREEN_ID_SETTINGS_MENU:
         create_screen_settings_menu();
         break;
-    case SCREEN_ID_HUB_OFFLINE:
-        create_screen_hub_offline();
-        break;
     case SCREEN_ID_SENSOR_NODES_SETTING:
         create_screen_sensor_nodes_setting();
         break;

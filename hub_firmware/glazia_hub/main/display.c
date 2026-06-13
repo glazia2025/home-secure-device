@@ -19,6 +19,8 @@
 #include "wifi.h"
 #include "ui/ui.h"
 #include "ui/screens.h"
+#include "ui/images.h"
+#include "ui/styles.h"
 #include "misc/lv_area.h"
 #include "state.h"
 #include "freertos/FreeRTOS.h"
@@ -41,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <time.h>
 
 static const char *TAG = "DISPLAY";
 
@@ -53,11 +56,24 @@ static const char *TAG = "DISPLAY";
 #define LCD_PARAM_BITS     8
 #define DRAW_BUF_LINES     8
 
+/* ── Display-side theme aliases ─────────────────────────────────────────── */
+#define C_CYAN_U32   UI_COLOR_VIOLET
+#define C_AMBER_U32  UI_COLOR_AMBER
+#define C_RED_U32    UI_COLOR_RED
+#define C_GREEN_U32  UI_COLOR_GREEN
+#define C_T2_U32     UI_COLOR_TEXT_SECONDARY
+
+/* ── Alert thresholds ────────────────────────────────────────────────────── */
+#define TEMP_THRESH_WARM  30.0f
+#define TEMP_THRESH_HOT   35.0f
+#define HUM_THRESH_HIGH   65.0f
+
 /* ── LVGL object handles (set once in display_init, read-only after) ─────── */
 static lv_obj_t *s_critical_sw    = NULL;
 static TaskHandle_t s_auth_task   = NULL;
 static bool s_switch_internal     = false;
 static bool s_ui_online           = true;
+static bool s_sensor_added_view   = false;
 static enum ScreensEnum s_prev_screen = SCREEN_ID_HUB_ONLINE;
 static enum ScreensEnum s_current_screen = SCREEN_ID_HUB_ONLINE;
 static bool s_screen_configured[_SCREEN_ID_LAST + 1];
@@ -104,13 +120,16 @@ static esp_err_t lcd_hw_init(void);
 static void load_screen_locked(enum ScreensEnum screen);
 static void configure_screen_locked(enum ScreensEnum screen);
 static void refresh_sensor_nodes_locked(void);
-static void set_online_dashboard_locked(void);
-static void set_offline_dashboard_locked(bool setup);
+static void set_hub_connection_status_locked(bool online);
+static void update_temp_pill_locked(float temp);
+static void update_hum_pill_locked(float hum);
+static void update_home_datetime_locked(void);
 static void cache_copy(char *dst, size_t dst_size, const char *src);
 static void cache_lock(void);
 static void cache_unlock(void);
 static const char *nonnull_text(const char *text, const char *fallback);
 static const char *fingerprint_phase_for_title(const char *title);
+static const char *fingerprint_instruction_for_phase(const char *phase);
 static const char *fingerprint_message_normalize(const char *message);
 static void align_fingerprint_text_locked(void);
 static void show_fingerprint_screen_locked(const char *title, const char *prompt);
@@ -263,7 +282,7 @@ static void auth_toggle_task(void *arg)
     free(a);
 
     g_mode = MODE_FINGERPRINT_VERIFY;
-    display_show_fingerprint_screen(action == AUTH_ACTION_ADD_FINGERPRINT ? "Admin Authentication" : "Authentication",
+    display_show_fingerprint_screen(action == AUTH_ACTION_ADD_FINGERPRINT ? "Authentication" : "Authentication",
                                     "Place your finger on the sensor");
     vTaskDelay(pdMS_TO_TICKS(350));
     esp_err_t result = (action == AUTH_ACTION_ADD_FINGERPRINT) ? fp_verify_admin() : fp_verify();
@@ -623,6 +642,7 @@ static void show_fingerprint_screen_locked(const char *title, const char *prompt
     load_screen_locked(SCREEN_ID_FINGERPRINT_SETTING);
     set_label_locked(objects.obj53, title ? title : "Fingerprint");
     set_label_locked(objects.obj49, phase);
+    set_label_locked(objects.fingerprint_instruction, fingerprint_instruction_for_phase(phase));
     set_label_locked(objects.obj52, message);
     align_fingerprint_text_locked();
     if (objects.obj51) lv_bar_set_value(objects.obj51, 0, LV_ANIM_OFF);
@@ -674,24 +694,145 @@ static const char *nonnull_text(const char *text, const char *fallback)
     return (text && text[0]) ? text : fallback;
 }
 
-static void set_online_dashboard_locked(void)
+static void set_status_pill_style_locked(lv_obj_t *pill, uint32_t color, uint32_t bg)
 {
-    load_screen_locked(SCREEN_ID_HUB_ONLINE);
-    set_switch_checked_locked(objects.obj1, true);
-    set_label_locked(objects.hub_status, "Online");
-    set_label_locked(objects.welcome_home, "Welcome, user");
-    set_label_locked(objects.sensor_info,
-                     strlen(g_home_name) > 0 ? g_home_name : "  HUB_loc\n(other info)");
+    if (!pill) return;
+    lv_obj_set_style_bg_color(pill, lv_color_hex(bg), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(pill, 150, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(pill, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(pill, 170, LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
-static void set_offline_dashboard_locked(bool setup)
+static void update_home_datetime_locked(void)
 {
-    load_screen_locked(SCREEN_ID_HUB_OFFLINE);
-    set_switch_checked_locked(objects.obj22, false);
-    set_label_locked(objects.hub_status_1, setup ? "Setup" : "Offline");
-    set_label_locked(objects.welcome_home_1, setup ? "Glazia Hub" : "Welcome, user");
-    set_label_locked(objects.sensor_info_1,
-                     setup ? "Press button\nfor BLE setup" : "  HUB_loc\n(other info)");
+    char time_buf[8] = "--:--";
+    char date_buf[16] = "---";
+    time_t now = time(NULL);
+    struct tm tm_now;
+
+    if (now > 0 && localtime_r(&now, &tm_now) != NULL && tm_now.tm_year >= 124) {
+        strftime(time_buf, sizeof(time_buf), "%H:%M", &tm_now);
+        strftime(date_buf, sizeof(date_buf), "%a %d %b", &tm_now);
+    }
+
+    if (objects.home_time) set_label_locked(objects.home_time, time_buf);
+    if (objects.home_date) set_label_locked(objects.home_date, date_buf);
+    if (objects.strip_date) set_label_locked(objects.strip_date, date_buf);
+}
+
+static void set_hub_connection_status_locked(bool online)
+{
+    load_screen_locked(SCREEN_ID_HUB_ONLINE);
+    update_home_datetime_locked();
+    set_switch_checked_locked(objects.obj1, online);
+
+    if (online) {
+        if (objects.status_dot)
+            lv_obj_set_style_bg_color(objects.status_dot, lv_color_hex(C_GREEN_U32),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (objects.hub_location_dot)
+            lv_obj_set_style_bg_color(objects.hub_location_dot, lv_color_hex(C_GREEN_U32),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (objects.hub_status)
+            lv_obj_set_style_text_color(objects.hub_status, lv_color_hex(C_GREEN_U32),
+                                        LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (objects.hub_location)
+            lv_obj_set_style_text_color(objects.hub_location, lv_color_hex(C_GREEN_U32),
+                                        LV_PART_MAIN | LV_STATE_DEFAULT);
+        set_label_locked(objects.hub_status, "Online");
+        set_label_locked(objects.hub_location, strlen(g_home_name) > 0 ? g_home_name : "HUB_loc");
+
+        int n = espnow_get_sensor_count();
+        char info_buf[64];
+        snprintf(info_buf, sizeof(info_buf), "%d sensor node%s active", n, n == 1 ? "" : "s");
+        set_label_locked(objects.sensor_info, info_buf);
+    } else {
+        if (objects.status_dot)
+            lv_obj_set_style_bg_color(objects.status_dot, lv_color_hex(C_RED_U32),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (objects.hub_location_dot)
+            lv_obj_set_style_bg_color(objects.hub_location_dot, lv_color_hex(C_RED_U32),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (objects.hub_status)
+            lv_obj_set_style_text_color(objects.hub_status, lv_color_hex(C_RED_U32),
+                                        LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (objects.hub_location)
+            lv_obj_set_style_text_color(objects.hub_location, lv_color_hex(C_RED_U32),
+                                        LV_PART_MAIN | LV_STATE_DEFAULT);
+        set_label_locked(objects.hub_status, "Offline");
+        set_label_locked(objects.hub_location, strlen(g_home_name) > 0 ? g_home_name : "HUB_loc");
+        set_label_locked(objects.sensor_info, "0 nodes active - Sensors disconnected");
+    }
+}
+
+static void update_temp_pill_locked(float temp)
+{
+    if (!objects.obj7 || !objects.temp_mood || !objects.temp_arc) return;
+    const char *text;
+    uint32_t color;
+    if (temp > TEMP_THRESH_HOT) {
+        text = "Too Hot!";
+        color = C_RED_U32;
+    } else if (temp > TEMP_THRESH_WARM) {
+        text = "Warm";
+        color = C_AMBER_U32;
+    } else {
+        text = "Comfortable";
+        color = C_CYAN_U32;
+    }
+    uint32_t chip_bg = temp > TEMP_THRESH_HOT ? UI_COLOR_ALERT_BG : UI_COLOR_PANEL;
+    lv_label_set_text(objects.obj7, text);
+    lv_obj_set_style_text_color(objects.obj7, lv_color_hex(color),
+                                LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (objects.temp_img)
+        lv_obj_set_style_bg_color(objects.temp_img, lv_color_hex(color),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(objects.temp_arc, lv_color_hex(color),
+                               LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    set_status_pill_style_locked(objects.temp_mood, color, chip_bg);
+    if (objects.temp_cont) {
+        lv_obj_set_style_bg_color(objects.temp_cont,
+                                  lv_color_hex(temp > TEMP_THRESH_HOT ? UI_COLOR_ALERT_BG : UI_COLOR_CARD),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(objects.temp_cont,
+                                      lv_color_hex(temp > TEMP_THRESH_HOT ? UI_COLOR_ALERT_BORDER : UI_COLOR_CARD_BORDER),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+}
+
+static void update_hum_pill_locked(float hum)
+{
+    if (!objects.obj12 || !objects.hum_mood || !objects.hum_bar) return;
+    const char *text;
+    uint32_t color;
+    if (hum >= 80.0f) {
+        text = "Critical";
+        color = C_RED_U32;
+    } else if (hum > HUM_THRESH_HIGH) {
+        text = "High";
+        color = C_AMBER_U32;
+    } else {
+        text = "Moderate";
+        color = C_CYAN_U32;
+    }
+    uint32_t chip_bg = hum >= 80.0f ? UI_COLOR_ALERT_BG : UI_COLOR_PANEL;
+    lv_label_set_text(objects.obj12, text);
+    lv_obj_set_style_text_color(objects.obj12, lv_color_hex(color),
+                                LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (objects.hum_img)
+        lv_obj_set_style_bg_color(objects.hum_img, lv_color_hex(color),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(objects.hum_bar, lv_color_hex(color),
+                              LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    set_status_pill_style_locked(objects.hum_mood, color, chip_bg);
+    if (objects.hum_cont) {
+        lv_obj_set_style_bg_color(objects.hum_cont,
+                                  lv_color_hex(hum >= 80.0f ? UI_COLOR_ALERT_BG : UI_COLOR_CARD),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(objects.hum_cont,
+                                      lv_color_hex(hum >= 80.0f ? UI_COLOR_ALERT_BORDER : UI_COLOR_CARD_BORDER),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
 }
 
 static const char *fingerprint_phase_for_title(const char *title)
@@ -704,6 +845,14 @@ static const char *fingerprint_phase_for_title(const char *title)
         return "Verifying your fingerprint";
     }
     return "Registering your fingerprint";
+}
+
+static const char *fingerprint_instruction_for_phase(const char *phase)
+{
+    if (phase && (strstr(phase, "Register") || strstr(phase, "register"))) {
+        return "Keep your finger on the sensor\nfor registration.";
+    }
+    return "Place your finger on the sensor\nfor verification.";
 }
 
 static const char *fingerprint_message_normalize(const char *message)
@@ -738,20 +887,25 @@ static void align_dashboard_value_locked(lv_obj_t *value, lv_obj_t *arc)
 static void align_fingerprint_text_locked(void)
 {
     if (objects.obj53) {
-        lv_obj_set_pos(objects.obj53, 0, 18);
-        lv_obj_set_width(objects.obj53, 240);
+        lv_obj_set_pos(objects.obj53, 40, 10);
+        lv_obj_set_width(objects.obj53, 144);
         lv_obj_set_style_text_align(objects.obj53, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     }
     if (objects.obj49) {
-        lv_obj_set_pos(objects.obj49, 0, 148);
-        lv_obj_set_width(objects.obj49, 240);
+        lv_obj_set_pos(objects.obj49, 20, 126);
+        lv_obj_set_width(objects.obj49, 184);
         lv_obj_set_style_text_font(objects.obj49, &lv_font_montserrat_12, LV_PART_MAIN);
         lv_obj_set_style_text_align(objects.obj49, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     }
+    if (objects.fingerprint_instruction) {
+        lv_obj_set_pos(objects.fingerprint_instruction, 18, 166);
+        lv_obj_set_width(objects.fingerprint_instruction, 188);
+        lv_obj_set_style_text_align(objects.fingerprint_instruction, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    }
     if (objects.obj52) {
-        lv_obj_set_pos(objects.obj52, 0, 214);
-        lv_obj_set_width(objects.obj52, 240);
-        lv_obj_set_style_text_align(objects.obj52, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_pos(objects.obj52, 74, 226);
+        lv_obj_set_width(objects.obj52, 90);
+        lv_obj_set_style_text_align(objects.obj52, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     }
 }
 
@@ -765,19 +919,15 @@ static void set_dashboard_values_locked(float temp, float hum)
 
     snprintf(buf, sizeof(buf), "%.1f", temp);
     set_label_locked(objects.temp_val, buf);
-    set_label_locked(objects.temp_val_1, buf);
     align_dashboard_value_locked(objects.temp_val, objects.temp_arc);
-    align_dashboard_value_locked(objects.temp_val_1, objects.temp_arc_1);
     if (objects.temp_arc) lv_arc_set_value(objects.temp_arc, (int)temp);
-    if (objects.temp_arc_1) lv_arc_set_value(objects.temp_arc_1, (int)temp);
 
     snprintf(buf, sizeof(buf), "%.0f", hum);
     set_label_locked(objects.hum_val, buf);
-    set_label_locked(objects.hum_val_1, buf);
-    align_dashboard_value_locked(objects.hum_val, objects.hum_arc);
-    align_dashboard_value_locked(objects.hum_val_1, objects.hum_arc_1);
-    if (objects.hum_arc) lv_arc_set_value(objects.hum_arc, (int)hum);
-    if (objects.hum_arc_1) lv_arc_set_value(objects.hum_arc_1, (int)hum);
+    if (objects.hum_bar) lv_bar_set_value(objects.hum_bar, (int)hum, LV_ANIM_OFF);
+
+    update_temp_pill_locked(temp);
+    update_hum_pill_locked(hum);
 }
 
 static void cache_apply_locked(void)
@@ -786,18 +936,25 @@ static void cache_apply_locked(void)
 
     switch (s_display_cache.view) {
     case CACHE_VIEW_SETUP:
-        set_offline_dashboard_locked(true);
+        set_hub_connection_status_locked(false);
+        set_label_locked(objects.hub_status, "Setup");
+        set_label_locked(objects.hub_location, "HUB_loc");
+        set_label_locked(objects.welcome_home, "Glazia Hub");
+        set_label_locked(objects.sensor_info, "Press button for BLE setup");
         break;
     case CACHE_VIEW_ONLINE:
-        set_online_dashboard_locked();
+        set_hub_connection_status_locked(true);
         break;
     case CACHE_VIEW_OFFLINE:
-        set_offline_dashboard_locked(false);
+        set_hub_connection_status_locked(false);
         break;
     case CACHE_VIEW_FINGERPRINT:
         load_screen_locked(SCREEN_ID_FINGERPRINT_SETTING);
         set_label_locked(objects.obj53, nonnull_text(s_display_cache.fp_title, "Fingerprint"));
         set_label_locked(objects.obj49, nonnull_text(s_display_cache.fp_phase, "Registering your fingerprint"));
+        set_label_locked(objects.fingerprint_instruction,
+                         fingerprint_instruction_for_phase(nonnull_text(s_display_cache.fp_phase,
+                                                                         "Registering your fingerprint")));
         set_label_locked(objects.obj52,
                          fingerprint_message_normalize(nonnull_text(s_display_cache.fp_message,
                                                                     "Place your finger on the sensor")));
@@ -807,14 +964,6 @@ static void cache_apply_locked(void)
     case CACHE_VIEW_NONE:
     default:
         break;
-    }
-
-    if (s_display_cache.home_name[0]) {
-        if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
-            set_label_locked(objects.sensor_info, s_display_cache.home_name);
-        } else if (s_current_screen == SCREEN_ID_HUB_OFFLINE) {
-            set_label_locked(objects.sensor_info_1, s_display_cache.home_name);
-        }
     }
 
     if (s_display_cache.has_temp_hum) {
@@ -837,7 +986,7 @@ static void nav_back_cb(lv_event_t *e)
         display_clear_sensor_notifications();
         target = SCREEN_ID_SENSOR_NODES_SETTING;
     } else {
-        target = s_ui_online ? SCREEN_ID_HUB_ONLINE : SCREEN_ID_HUB_OFFLINE;
+        target = SCREEN_ID_HUB_ONLINE;
     }
 
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
@@ -850,7 +999,7 @@ static void settings_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     ESP_LOGI(TAG, "Touch: Settings");
-    s_prev_screen = s_ui_online ? SCREEN_ID_HUB_ONLINE : SCREEN_ID_HUB_OFFLINE;
+    s_prev_screen = SCREEN_ID_HUB_ONLINE;
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
         load_screen_locked(SCREEN_ID_SETTINGS_MENU);
         lvgl_port_unlock();
@@ -882,7 +1031,7 @@ static void add_fingerprint_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     ESP_LOGI(TAG, "Touch: Add Fingerprint");
-    show_fingerprint_screen_locked("Admin Authentication", "Place your finger on the sensor");
+    show_fingerprint_screen_locked("Authentication", "Place your finger on the sensor");
     start_auth_action(AUTH_ACTION_ADD_FINGERPRINT, NULL, false);
 }
 
@@ -890,12 +1039,24 @@ static void add_sensor_auth_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     ESP_LOGI(TAG, "Touch: Add Sensor");
+    show_fingerprint_screen_locked("Authentication", "Place your finger on the sensor");
     start_auth_action(AUTH_ACTION_ADD_SENSOR, NULL, false);
 }
 
 static void add_sensor_start_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (s_sensor_added_view) {
+        ESP_LOGI(TAG, "Touch: Sensor Added Done");
+        s_sensor_added_view = false;
+        display_clear_sensor_notifications();
+        if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+            load_screen_locked(SCREEN_ID_SENSOR_NODES_SETTING);
+            refresh_sensor_nodes_locked();
+            lvgl_port_unlock();
+        }
+        return;
+    }
     ESP_LOGI(TAG, "Touch: Start Sensor Pairing");
     sensor_pairing_open_window();
 }
@@ -913,23 +1074,39 @@ static void sensor_switch_cb(lv_event_t *e)
 static void create_sensor_row(lv_obj_t *parent, int index, const char *name, bool enabled)
 {
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_pos(row, 9, 9 + index * 54);
-    lv_obj_set_size(row, 219, 50);
+    lv_obj_set_pos(row, 8, 4 + index * 50);
+    lv_obj_set_size(row, 224, 44);
     lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(row, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(row, 160, LV_PART_MAIN);
+    lv_obj_set_style_border_color(row, lv_color_hex(UI_COLOR_CARD_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(row, 190, LV_PART_MAIN);
+    lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(row, 12, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(row, lv_color_hex(UI_COLOR_CARD), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(row, 230, LV_PART_MAIN);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *sensor_icon = lv_img_create(row);
+    lv_obj_set_pos(sensor_icon, 10, 7);
+    lv_img_set_src(sensor_icon, &img_sensor);
+    lv_img_set_zoom(sensor_icon, 150);
+    lv_obj_set_style_img_recolor(sensor_icon, lv_color_hex(UI_COLOR_AMBER),
+                                 LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_img_recolor_opa(sensor_icon, 255,
+                                     LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(sensor_icon, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label = lv_label_create(row);
     lv_label_set_text(label, name);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_pos(label, 41, 20);
+    lv_obj_set_style_text_color(label, lv_color_hex(enabled ? UI_COLOR_TEXT_PRIMARY : UI_COLOR_TEXT_DIM), LV_PART_MAIN);
+    lv_obj_set_pos(label, 52, 16);
+    lv_obj_set_size(label, 100, 14);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 
     lv_obj_t *sw = lv_switch_create(row);
-    lv_obj_set_pos(sw, 165, 15);
-    lv_obj_set_size(sw, 50, 20);
+    lv_obj_set_pos(sw, 166, 10);
+    lv_obj_set_size(sw, 44, 24);
+    ui_style_toggle(sw);
     make_touch_target(sw);
     set_switch_checked_locked(sw, enabled);
     lv_obj_add_event_cb(sw, sensor_switch_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)index);
@@ -948,14 +1125,12 @@ static void configure_screen_locked(enum ScreensEnum screen)
         make_touch_target_tree(objects.button);
         if (objects.obj1) lv_obj_add_event_cb(objects.obj1, critical_toggle_cb, LV_EVENT_VALUE_CHANGED, NULL);
         if (objects.button) lv_obj_add_event_cb(objects.button, settings_cb, LV_EVENT_CLICKED, NULL);
-        set_dashboard_values_locked(0.0f, 0.0f);
-        break;
-
-    case SCREEN_ID_HUB_OFFLINE:
-        make_touch_target(objects.obj22);
-        make_touch_target_tree(objects.button_1);
-        if (objects.obj22) lv_obj_add_event_cb(objects.obj22, critical_toggle_cb, LV_EVENT_VALUE_CHANGED, NULL);
-        if (objects.button_1) lv_obj_add_event_cb(objects.button_1, settings_cb, LV_EVENT_CLICKED, NULL);
+        cache_lock();
+        bool has_temp_hum = s_display_cache.has_temp_hum;
+        float temp = s_display_cache.temp;
+        float hum = s_display_cache.hum;
+        cache_unlock();
+        set_dashboard_values_locked(has_temp_hum ? temp : 0.0f, has_temp_hum ? hum : 0.0f);
         break;
 
     case SCREEN_ID_SETTINGS_MENU:
@@ -998,11 +1173,6 @@ static void configure_screen_locked(enum ScreensEnum screen)
         break;
 
     case SCREEN_ID_ADD_ANOTHER__SENSOR:
-        if (objects.added_sensor_data) {
-            lv_obj_set_scroll_dir(objects.added_sensor_data, LV_DIR_VER);
-            lv_obj_set_scrollbar_mode(objects.added_sensor_data, LV_SCROLLBAR_MODE_ACTIVE);
-            lv_obj_clean(objects.added_sensor_data);
-        }
         make_back_touch_target(objects.obj55);
         make_touch_target_tree(objects.obj59);
         if (objects.obj55) lv_obj_add_event_cb(objects.obj55, nav_back_cb, LV_EVENT_CLICKED, NULL);
@@ -1094,9 +1264,9 @@ static void refresh_sensor_nodes_locked(void)
     int count = espnow_get_sensor_count();
     if (count == 0) {
         lv_obj_t *label = lv_label_create(objects.settings_menu_cont_1);
-        lv_label_set_text(label, "No sensor added yet");
+        lv_label_set_text(label, "No sensors paired yet");
         lv_obj_set_style_text_font(label, &lv_font_montserrat_12, LV_PART_MAIN);
-        lv_obj_set_style_text_color(label, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(C_T2_U32), LV_PART_MAIN);
         lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
         return;
     }
@@ -1126,12 +1296,7 @@ void display_show(const char *line1, const char *line2)
 
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
         if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
-            set_label_locked(objects.hub_status, "Online");
             set_label_locked(objects.sensor_info, line2 ? line2 : "");
-        } else if (s_current_screen == SCREEN_ID_HUB_OFFLINE) {
-            set_label_locked(objects.hub_status_1,
-                             s_display_cache.view == CACHE_VIEW_SETUP ? "Setup" : "Offline");
-            set_label_locked(objects.sensor_info_1, line2 ? line2 : "");
         }
         lvgl_port_unlock();
     }
@@ -1154,7 +1319,11 @@ void display_show_setup_prompt(void)
     }
 
     if (!lvgl_port_lock(pdMS_TO_TICKS(500))) return;
-    set_offline_dashboard_locked(true);
+    set_hub_connection_status_locked(false);
+    set_label_locked(objects.hub_status, "Setup");
+    set_label_locked(objects.hub_location, "HUB_loc");
+    set_label_locked(objects.welcome_home, "Glazia Hub");
+    set_label_locked(objects.sensor_info, "Press button for BLE setup");
     lvgl_port_unlock();
 }
 
@@ -1195,9 +1364,16 @@ void display_hub_location(const char *home_name)
 
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
         if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
-            set_label_locked(objects.sensor_info, home_name);
-        } else if (s_current_screen == SCREEN_ID_HUB_OFFLINE) {
-            set_label_locked(objects.sensor_info_1, home_name);
+            set_label_locked(objects.hub_status, s_ui_online ? "Online" : "Offline");
+            set_label_locked(objects.hub_location, home_name);
+            if (objects.hub_status)
+                lv_obj_set_style_text_color(objects.hub_status,
+                                            lv_color_hex(s_ui_online ? C_GREEN_U32 : C_RED_U32),
+                                            LV_PART_MAIN | LV_STATE_DEFAULT);
+            if (objects.hub_location)
+                lv_obj_set_style_text_color(objects.hub_location,
+                                            lv_color_hex(s_ui_online ? C_GREEN_U32 : C_RED_U32),
+                                            LV_PART_MAIN | LV_STATE_DEFAULT);
         }
         lvgl_port_unlock();
     }
@@ -1230,11 +1406,7 @@ void display_show_dashboard(bool online)
     }
 
     if (!lvgl_port_lock(pdMS_TO_TICKS(500))) return;
-    if (online) {
-        set_online_dashboard_locked();
-    } else {
-        set_offline_dashboard_locked(false);
-    }
+    set_hub_connection_status_locked(online);
     lvgl_port_unlock();
 }
 
@@ -1280,6 +1452,7 @@ void display_fingerprint_phase(const char *phase, const char *message)
 
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
         set_label_locked(objects.obj49, phase);
+        set_label_locked(objects.fingerprint_instruction, fingerprint_instruction_for_phase(phase));
         set_label_locked(objects.obj52, normalized);
         align_fingerprint_text_locked();
         lvgl_port_unlock();
@@ -1335,28 +1508,19 @@ void display_sensor_added_notification(const char *name)
     if (!lvgl_port_lock(pdMS_TO_TICKS(300))) return;
     ui_ensure_screen(SCREEN_ID_ADD_ANOTHER__SENSOR);
     configure_screen_locked(SCREEN_ID_ADD_ANOTHER__SENSOR);
-    if (!objects.added_sensor_data) {
+    if (!objects.added_sensor_data || !objects.obj58 || !objects.obj59 || !objects.obj60) {
         lvgl_port_unlock();
         return;
     }
 
-    int index = lv_obj_get_child_cnt(objects.added_sensor_data);
-    lv_obj_t *row = lv_obj_create(objects.added_sensor_data);
-    lv_obj_set_pos(row, 7, 8 + index * 30);
-    lv_obj_set_size(row, 180, 26);
-    lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(row, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(row, 120, LV_PART_MAIN);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *label = lv_label_create(row);
     char buf[48];
-    snprintf(buf, sizeof(buf), "%s added", name);
-    lv_label_set_text(label, buf);
-    lv_obj_set_pos(label, 38, 6);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, lv_color_black(), LV_PART_MAIN);
+    snprintf(buf, sizeof(buf), "%s has been added", name);
+    s_sensor_added_view = true;
+    lv_label_set_text(objects.obj58, buf);
+    lv_obj_clear_flag(objects.added_sensor_data, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(objects.obj60, "Done");
+    lv_obj_set_style_bg_color(objects.obj59, lv_color_hex(UI_COLOR_GREEN), LV_PART_MAIN);
+    lv_obj_set_style_text_color(objects.obj60, lv_color_hex(UI_COLOR_BG_GRAD), LV_PART_MAIN);
     lvgl_port_unlock();
 }
 
@@ -1364,6 +1528,14 @@ void display_clear_sensor_notifications(void)
 {
     if (!display_is_ready()) return;
     if (!lvgl_port_lock(pdMS_TO_TICKS(300))) return;
-    if (objects.added_sensor_data) lv_obj_clean(objects.added_sensor_data);
+    s_sensor_added_view = false;
+    if (objects.added_sensor_data) lv_obj_add_flag(objects.added_sensor_data, LV_OBJ_FLAG_HIDDEN);
+    if (objects.obj60) {
+        lv_label_set_text(objects.obj60, "+ Add Sensor");
+        lv_obj_set_style_text_color(objects.obj60, lv_color_hex(UI_COLOR_PRIMARY_TEXT), LV_PART_MAIN);
+    }
+    if (objects.obj59) {
+        lv_obj_set_style_bg_color(objects.obj59, lv_color_hex(UI_COLOR_PRIMARY_BUTTON), LV_PART_MAIN);
+    }
     lvgl_port_unlock();
 }

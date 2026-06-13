@@ -33,7 +33,6 @@ typedef struct {
     bool initialized;
     bool has_latest;
     bool has_displayed_valid;
-    bool zero_displayed;
     float latest_temp;
     float latest_hum;
     float last_display_temp;
@@ -241,14 +240,6 @@ static void filter_latest_sample(float *out_temp, float *out_hum)
     *out_hum = average_window(s_state.hum_window, s_state.window_count);
 }
 
-static void publish_zero_if_needed(void)
-{
-    if (!s_state.zero_displayed) {
-        display_update_temp_hum(0.0f, 0.0f);
-        s_state.zero_displayed = true;
-    }
-}
-
 static bool display_change_is_significant(float temp, float hum)
 {
     if (!s_state.has_displayed_valid) {
@@ -267,16 +258,12 @@ static void hub_sensor_task(void *arg)
     uint32_t consecutive_failures = 0;
 
     display_update_temp_hum(0.0f, 0.0f);
-    s_state.zero_displayed = true;
 
     while (1) {
         if (!hub_sensor_should_publish()) {
-            publish_zero_if_needed();
             vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(HUB_SENSOR_SAMPLE_MS));
             continue;
         }
-
-        s_state.zero_displayed = false;
 
         float raw_temp = 0.0f;
         float raw_hum = 0.0f;
