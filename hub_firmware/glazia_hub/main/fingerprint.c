@@ -413,7 +413,6 @@ static esp_err_t fp_enroll_once(uint16_t slot)
     result = ESP_OK;
 
 done:
-    delay_until_tick(deadline);
     display_fingerprint_progress(100);
     if (result == ESP_OK) {
         display_fingerprint_phase("Registering your fingerprint", "Registration completed");
@@ -545,7 +544,6 @@ static esp_err_t fp_verify_once(int attempt_num, bool admin_only)
              min_slot, max_slot, response.confirm, r307_confirm_name(response.confirm));
 
 done:
-    delay_until_tick(deadline);
     display_fingerprint_progress(100);
     if (result == ESP_OK) {
         display_fingerprint_phase(phase, "Access granted");
