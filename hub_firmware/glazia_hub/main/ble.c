@@ -65,7 +65,7 @@ static void check_and_proceed(void)
         got_token = false;
 
         // Spawn the transition task to avoid deadlocking the NimBLE thread
-        if (xTaskCreate(transition_to_wifi_task, "wifi_trans", 4096, NULL, 5, NULL) != pdPASS) {
+        if (xTaskCreate(transition_to_wifi_task, "wifi_trans", 12288, NULL, 5, NULL) != pdPASS) {
             ESP_LOGE(TAG, "Failed to create WiFi transition task");
         }
     }

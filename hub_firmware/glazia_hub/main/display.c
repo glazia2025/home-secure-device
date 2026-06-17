@@ -13,6 +13,7 @@
  *   [3]  Sensor list  — scrollable paired-sensor table     y: 192–311
  */
 #include "display.h"
+#include "ble.h"
 #include "button.h"
 #include "espnow.h"
 #include "fingerprint.h"
@@ -933,14 +934,13 @@ static void set_dashboard_values_locked(float temp, float hum)
 static void cache_apply_locked(void)
 {
     cache_lock();
+    display_cache_t cache = s_display_cache;
+    cache_unlock();
 
-    switch (s_display_cache.view) {
+    switch (cache.view) {
     case CACHE_VIEW_SETUP:
-        set_hub_connection_status_locked(false);
-        set_label_locked(objects.hub_status, "Setup");
-        set_label_locked(objects.hub_location, "HUB_loc");
-        set_label_locked(objects.welcome_home, "Glazia Hub");
-        set_label_locked(objects.sensor_info, "Press button for BLE setup");
+        ESP_LOGI(TAG, "Display applying cached setup prompt");
+        load_screen_locked(SCREEN_ID_HUB_REGISTER_WELCOME);
         break;
     case CACHE_VIEW_ONLINE:
         set_hub_connection_status_locked(true);
@@ -950,27 +950,25 @@ static void cache_apply_locked(void)
         break;
     case CACHE_VIEW_FINGERPRINT:
         load_screen_locked(SCREEN_ID_FINGERPRINT_SETTING);
-        set_label_locked(objects.obj53, nonnull_text(s_display_cache.fp_title, "Fingerprint"));
-        set_label_locked(objects.obj49, nonnull_text(s_display_cache.fp_phase, "Registering your fingerprint"));
+        set_label_locked(objects.obj53, nonnull_text(cache.fp_title, "Fingerprint"));
+        set_label_locked(objects.obj49, nonnull_text(cache.fp_phase, "Registering your fingerprint"));
         set_label_locked(objects.fingerprint_instruction,
-                         fingerprint_instruction_for_phase(nonnull_text(s_display_cache.fp_phase,
+                         fingerprint_instruction_for_phase(nonnull_text(cache.fp_phase,
                                                                          "Registering your fingerprint")));
         set_label_locked(objects.obj52,
-                         fingerprint_message_normalize(nonnull_text(s_display_cache.fp_message,
+                         fingerprint_message_normalize(nonnull_text(cache.fp_message,
                                                                     "Place your finger on the sensor")));
         align_fingerprint_text_locked();
-        if (objects.obj51) lv_bar_set_value(objects.obj51, s_display_cache.fp_progress, LV_ANIM_OFF);
+        if (objects.obj51) lv_bar_set_value(objects.obj51, cache.fp_progress, LV_ANIM_OFF);
         break;
     case CACHE_VIEW_NONE:
     default:
         break;
     }
 
-    if (s_display_cache.has_temp_hum) {
-        set_dashboard_values_locked(s_display_cache.temp, s_display_cache.hum);
+    if (cache.has_temp_hum) {
+        set_dashboard_values_locked(cache.temp, cache.hum);
     }
-
-    cache_unlock();
 }
 
 static void nav_back_cb(lv_event_t *e)
@@ -1112,6 +1110,19 @@ static void create_sensor_row(lv_obj_t *parent, int index, const char *name, boo
     lv_obj_add_event_cb(sw, sensor_switch_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)index);
 }
 
+static void reg_welcome_btn_event_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    /* Show QR screen immediately for visual feedback */
+    if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+        load_screen_locked(SCREEN_ID_HUB_REGISTER_QR);
+        lvgl_port_unlock();
+    }
+    /* Start BLE provisioning — identical to physical button press in MODE_IDLE */
+    g_mode = MODE_HUB_PAIRING;
+    ble_start();
+}
+
 static void configure_screen_locked(enum ScreensEnum screen)
 {
     if (screen < _SCREEN_ID_FIRST || screen > _SCREEN_ID_LAST || s_screen_configured[screen]) {
@@ -1119,6 +1130,16 @@ static void configure_screen_locked(enum ScreensEnum screen)
     }
 
     switch (screen) {
+    case SCREEN_ID_HUB_REGISTER_WELCOME:
+        make_touch_target_tree(objects.reg_welcome_btn);
+        if (objects.reg_welcome_btn)
+            lv_obj_add_event_cb(objects.reg_welcome_btn,
+                                reg_welcome_btn_event_cb, LV_EVENT_CLICKED, NULL);
+        break;
+
+    case SCREEN_ID_HUB_REGISTER_QR:
+        break;
+
     case SCREEN_ID_HUB_ONLINE:
         s_critical_sw = objects.obj1;
         make_touch_target(objects.obj1);
@@ -1213,7 +1234,9 @@ static void display_init_task(void *arg)
     ESP_LOGI(TAG, "Display init: ui_init starting");
     ui_init();
     ESP_LOGI(TAG, "Display init: ui_init done");
-    configure_screen_locked(SCREEN_ID_HUB_ONLINE);
+    enum ScreensEnum boot_screen = (g_hub_secret[0] != '\0')
+        ? SCREEN_ID_HUB_ONLINE : SCREEN_ID_HUB_REGISTER_WELCOME;
+    configure_screen_locked(boot_screen);
 
     s_display_state = DISPLAY_READY;
     cache_apply_locked();
@@ -1319,11 +1342,8 @@ void display_show_setup_prompt(void)
     }
 
     if (!lvgl_port_lock(pdMS_TO_TICKS(500))) return;
-    set_hub_connection_status_locked(false);
-    set_label_locked(objects.hub_status, "Setup");
-    set_label_locked(objects.hub_location, "HUB_loc");
-    set_label_locked(objects.welcome_home, "Glazia Hub");
-    set_label_locked(objects.sensor_info, "Press button for BLE setup");
+    ESP_LOGI(TAG, "Display loading setup registration welcome");
+    load_screen_locked(SCREEN_ID_HUB_REGISTER_WELCOME);
     lvgl_port_unlock();
 }
 

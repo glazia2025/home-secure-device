@@ -10,19 +10,23 @@ extern "C" {
 // Screens
 
 enum ScreensEnum {
-    _SCREEN_ID_FIRST = 1,
-    SCREEN_ID_HUB_ONLINE = 1,
-    SCREEN_ID_SETTINGS_MENU = 2,
-    SCREEN_ID_SENSOR_NODES_SETTING = 3,
-    SCREEN_ID_ABOUT_GLAZIA = 4,
-    SCREEN_ID_FINGERPRINT_SETTING = 5,
-    SCREEN_ID_ADD_ANOTHER__SENSOR = 6,
-    _SCREEN_ID_LAST = 6
+    _SCREEN_ID_FIRST                = 1,
+    SCREEN_ID_HUB_REGISTER_WELCOME  = 1,
+    SCREEN_ID_HUB_REGISTER_QR       = 2,
+    SCREEN_ID_HUB_ONLINE            = 3,
+    SCREEN_ID_SETTINGS_MENU         = 4,
+    SCREEN_ID_SENSOR_NODES_SETTING  = 5,
+    SCREEN_ID_ABOUT_GLAZIA          = 6,
+    SCREEN_ID_FINGERPRINT_SETTING   = 7,
+    SCREEN_ID_ADD_ANOTHER__SENSOR   = 8,
+    _SCREEN_ID_LAST                 = 8,
 };
 
-/* Screen objects MUST be the first 6 fields in declaration order — they are
+/* Screen objects MUST be the first 8 fields in declaration order — they are
  * accessed by index (screenId - 1) via getLvglObjectFromIndex in ui.c. */
 typedef struct _objects_t {
+    lv_obj_t *hub_register_welcome;
+    lv_obj_t *hub_register_qr;
     lv_obj_t *hub_online;
     lv_obj_t *settings_menu;
     lv_obj_t *sensor_nodes_setting;
@@ -108,9 +112,20 @@ typedef struct _objects_t {
     lv_obj_t *obj58;
     lv_obj_t *obj59;
     lv_obj_t *obj60;
+    /* ── hub_register_welcome widgets ──────────────────────────── */
+    lv_obj_t *reg_welcome_logo;
+    lv_obj_t *reg_welcome_btn;
+    /* ── hub_register_qr widgets ───────────────────────────────── */
+    lv_obj_t *reg_qr_status;
+    lv_obj_t *reg_qr_code;
 } objects_t;
 
 extern objects_t objects;
+
+void create_screen_hub_register_welcome(void);
+void tick_screen_hub_register_welcome(void);
+void create_screen_hub_register_qr(void);
+void tick_screen_hub_register_qr(void);
 
 void create_screen_hub_online();
 void tick_screen_hub_online();

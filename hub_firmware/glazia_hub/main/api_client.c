@@ -5,6 +5,7 @@
 #include "nvs_storage.h"
 #include "fingerprint.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -54,10 +55,11 @@ static int do_request(esp_http_client_method_t method, const char *path,
     }
 
     esp_http_client_config_t config = {
-        .url           = url,
-        .event_handler = http_event_handler,
-        .method        = method,
-        .timeout_ms    = 10000,
+        .url               = url,
+        .event_handler     = http_event_handler,
+        .method            = method,
+        .timeout_ms        = 10000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -79,9 +81,17 @@ static int do_request(esp_http_client_method_t method, const char *path,
     int       status = esp_http_client_get_status_code(client);
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP %s %s transport failed: %s",
-                 method_name, path, esp_err_to_name(err));
-        status = -1;
+        // ESP-IDF HTTP client returns ESP_ERR_NOT_SUPPORTED for 401 responses when no
+        // HTTP auth credentials are configured. The status code is still valid — propagate it.
+        if (err == ESP_ERR_NOT_SUPPORTED && status >= 400 && status < 600) {
+            if (log_request) {
+                ESP_LOGW(TAG, "HTTP %s %s server error: status=%d", method_name, path, status);
+            }
+        } else {
+            ESP_LOGE(TAG, "HTTP %s %s transport failed: %s",
+                     method_name, path, esp_err_to_name(err));
+            status = -1;
+        }
     } else {
         if (log_request || status != 404) {
             ESP_LOGI(TAG, "HTTP %s %s completed: status=%d bytes=%d",

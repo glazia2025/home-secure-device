@@ -3,6 +3,7 @@
 #include "images.h"
 #include "actions.h"
 #include "vars.h"
+#include "../state.h"
 
 #include <string.h>
 
@@ -25,6 +26,12 @@ void ui_ensure_screen(enum ScreensEnum screenId) {
     }
 
     switch (screenId) {
+    case SCREEN_ID_HUB_REGISTER_WELCOME:
+        create_screen_hub_register_welcome();
+        break;
+    case SCREEN_ID_HUB_REGISTER_QR:
+        create_screen_hub_register_qr();
+        break;
     case SCREEN_ID_HUB_ONLINE:
         create_screen_hub_online();
         break;
@@ -58,8 +65,11 @@ void loadScreen(enum ScreensEnum screenId) {
 }
 
 void ui_init() {
-    loadScreen(SCREEN_ID_HUB_ONLINE);
-
+    if (g_hub_secret[0] != '\0') {
+        loadScreen(SCREEN_ID_HUB_ONLINE);
+    } else {
+        loadScreen(SCREEN_ID_HUB_REGISTER_WELCOME);
+    }
 }
 
 void ui_tick() {

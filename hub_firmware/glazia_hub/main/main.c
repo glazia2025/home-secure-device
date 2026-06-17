@@ -35,7 +35,11 @@ static void fingerprint_init_task(void *arg)
         ESP_LOGW(TAG, "Fingerprint init failed: %s", esp_err_to_name(fp_err));
     } else {
         ESP_LOGI(TAG, "Fingerprint driver ready");
-        fp_start_enroll_if_needed();
+        if (g_hub_secret[0] != '\0') {
+            fp_start_enroll_if_needed();
+        } else {
+            ESP_LOGI(TAG, "Hub not yet registered — skipping boot fingerprint enrollment");
+        }
     }
 
     vTaskDelete(NULL);

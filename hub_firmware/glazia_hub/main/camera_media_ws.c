@@ -7,6 +7,7 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "state.h"
@@ -81,7 +82,7 @@ esp_err_t camera_media_ws_connect(const char *stream_session_id)
 
     static char uri[192];
     static char headers[448];
-    snprintf(uri, sizeof(uri), "ws://%s:%d/api/device/hubs/camera/ws", SERVER_IP, SERVER_PORT);
+    snprintf(uri, sizeof(uri), "wss://%s:%d/api/device/hubs/camera/ws", SERVER_IP, SERVER_PORT);
     snprintf(headers, sizeof(headers),
              "X-Device-Api-Key: %s\r\n"
              "X-Hub-Mac-Address: %s\r\n"
@@ -90,9 +91,10 @@ esp_err_t camera_media_ws_connect(const char *stream_session_id)
              DEVICE_API_KEY, g_hub_mac, g_hub_secret, s_stream_session_id);
 
     esp_websocket_client_config_t config = {
-        .uri = uri,
-        .headers = headers,
-        .task_name = "camera_ws",
+        .uri               = uri,
+        .headers           = headers,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .task_name         = "camera_ws",
         /* 6144 matches the camera_stream task stack; the WS client task needs
          * room for lwip send path + the large binary frame send call. 4096
          * was marginal when esp_websocket_client_send_bin is called on a

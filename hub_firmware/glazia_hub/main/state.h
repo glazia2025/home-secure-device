@@ -30,10 +30,10 @@ extern char g_pending_sensor_mac[18];    // e.g. "AA:BB:CC:DD:EE:FF"
 extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
 
 // ── Server Config ─────────────────────────────────────────────────────────
-#define SERVER_IP      "10.242.127.6"
-#define SERVER_PORT    3000
-#define SERVER_BASE    "http://10.242.127.6:3000"
-#define DEVICE_API_KEY "glazia-device-dev-key"
+#define SERVER_IP      "home-secure.glazia.in"
+#define SERVER_PORT    443
+#define SERVER_BASE    "https://home-secure.glazia.in"
+#define DEVICE_API_KEY "replace-this-too"
 #define BLE_DEVICE_NAME "GlaziaHub"
 
 // ── ESP-NOW Security ──────────────────────────────────────────────────────

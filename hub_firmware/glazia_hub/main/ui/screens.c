@@ -253,6 +253,119 @@ static void create_home_content(lv_obj_t *root)
     create_bottom_bar(root);
 }
 
+void create_screen_hub_register_welcome(void)
+{
+    lv_obj_t *obj = lv_obj_create(0);
+    objects.hub_register_welcome = obj;
+    base_screen(obj);
+
+    const lv_coord_t ring_center_y = 108;
+    static const lv_coord_t ring_sizes[] = {96, 144, 192};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *ring = lv_obj_create(obj);
+        lv_coord_t sz = ring_sizes[i];
+        lv_obj_set_size(ring, sz, sz);
+        lv_obj_align(ring, LV_ALIGN_TOP_MID, 0, ring_center_y - sz / 2);
+        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(ring,
+            lv_color_hex(UI_COLOR_TEXT_DIM), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(ring, (lv_opa_t)(30 - i * 8), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(ring, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    objects.reg_welcome_logo = lv_img_create(obj);
+    lv_img_set_src(objects.reg_welcome_logo, &img_logo_hub);
+    uint32_t logo_max = img_logo_hub.header.w > img_logo_hub.header.h
+                        ? img_logo_hub.header.w : img_logo_hub.header.h;
+    if (logo_max > 0)
+        lv_img_set_zoom(objects.reg_welcome_logo, (uint16_t)((52U * 256U) / logo_max));
+    lv_obj_align(objects.reg_welcome_logo, LV_ALIGN_TOP_MID, 0, ring_center_y - 40);
+    lv_obj_clear_flag(objects.reg_welcome_logo, LV_OBJ_FLAG_SCROLLABLE);
+
+    label(obj, "Your Hub for Smarter Living", 0, 176, SCREEN_W, 16,
+          &lv_font_montserrat_12, UI_COLOR_TEXT_PRIMARY,
+          LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+
+    label(obj, "Home Automation \xE2\x80\xA2 Surveillance \xE2\x80\xA2 Monitoring",
+          PAGE_X, 196, PAGE_W, 24,
+          &lv_font_montserrat_10, UI_COLOR_TEXT_SECONDARY,
+          LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_WRAP);
+
+    objects.reg_welcome_btn = lv_btn_create(obj);
+    lv_obj_set_pos(objects.reg_welcome_btn, PAGE_X, 268);
+    lv_obj_set_size(objects.reg_welcome_btn, PAGE_W, 40);
+    ui_style_primary_button(objects.reg_welcome_btn);
+    lv_obj_set_style_pad_all(objects.reg_welcome_btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t *btn_label = label(objects.reg_welcome_btn, "Register Hub", 0, 0, PAGE_W, 18,
+                                &lv_font_montserrat_14, UI_COLOR_PRIMARY_TEXT,
+                                LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+    lv_obj_align(btn_label, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t *btn_icon = icon(objects.reg_welcome_btn, &img_fwd, 0, 0, 150,
+                              UI_COLOR_PRIMARY_TEXT, true);
+    lv_obj_align(btn_icon, LV_ALIGN_RIGHT_MID, -14, 0);
+
+    tick_screen_hub_register_welcome();
+}
+
+void tick_screen_hub_register_welcome(void) {}
+
+void create_screen_hub_register_qr(void)
+{
+    lv_obj_t *obj = lv_obj_create(0);
+    objects.hub_register_qr = obj;
+    base_screen(obj);
+
+    lv_obj_t *hdr = card(obj, PAGE_X, 8, PAGE_W, 56, 13);
+
+    lv_obj_t *logo_img = lv_img_create(hdr);
+    lv_obj_set_pos(logo_img, -10, -10);
+    lv_img_set_src(logo_img, &img_logo_hub);
+    uint32_t logo_max = img_logo_hub.header.w > img_logo_hub.header.h
+                        ? img_logo_hub.header.w : img_logo_hub.header.h;
+    if (logo_max > 0)
+        lv_img_set_zoom(logo_img, (uint16_t)((36U * 256U) / logo_max));
+    lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_SCROLLABLE);
+
+    label(hdr, "Welcome, user", 56, 9, 158, 18,
+          &lv_font_montserrat_14, UI_COLOR_TEXT_PRIMARY,
+          LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
+
+    lv_obj_t *status_row = lv_obj_create(hdr);
+    lv_obj_set_pos(status_row, 56, 31);
+    lv_obj_set_size(status_row, 100, 16);
+    ui_style_transparent(status_row);
+
+    dot(status_row, 0, 5, 5, UI_COLOR_AMBER);
+    objects.reg_qr_status = label(status_row, "Setup", 10, 1, 80, 13,
+                                  &lv_font_montserrat_10, UI_COLOR_AMBER,
+                                  LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
+
+    lv_obj_t *qr_card = card(obj, PAGE_X, 70, PAGE_W, 238, 13);
+
+    objects.reg_qr_code = lv_qrcode_create(qr_card, 160, lv_color_black(), lv_color_white());
+    lv_obj_set_pos(objects.reg_qr_code, (PAGE_W - 160) / 2, 20);
+    lv_obj_clear_flag(objects.reg_qr_code, LV_OBJ_FLAG_SCROLLABLE);
+    lv_qrcode_update(objects.reg_qr_code, g_hub_mac, (uint32_t)strlen(g_hub_mac));
+
+    lv_obj_t *scan_row = lv_obj_create(qr_card);
+    lv_obj_set_pos(scan_row, 14, 192);
+    lv_obj_set_size(scan_row, PAGE_W - 28, 32);
+    ui_style_transparent(scan_row);
+
+    label(scan_row, "Scan to Register the Hub",
+          0, 8, PAGE_W - 28, 14,
+          &lv_font_montserrat_10, UI_COLOR_TEXT_SECONDARY,
+          LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+
+    tick_screen_hub_register_qr();
+}
+
+void tick_screen_hub_register_qr(void) {}
+
 void create_screen_hub_online()
 {
     lv_obj_t *obj = lv_obj_create(0);
@@ -460,6 +573,8 @@ void tick_screen_add_another__sensor(void) {}
 
 typedef void (*tick_screen_func_t)(void);
 tick_screen_func_t tick_screen_funcs[] = {
+    tick_screen_hub_register_welcome,
+    tick_screen_hub_register_qr,
     tick_screen_hub_online,
     tick_screen_settings_menu,
     tick_screen_sensor_nodes_setting,
@@ -516,6 +631,8 @@ void create_screens(void)
         true, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
 
+    create_screen_hub_register_welcome();
+    create_screen_hub_register_qr();
     create_screen_hub_online();
     create_screen_settings_menu();
     create_screen_sensor_nodes_setting();

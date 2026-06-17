@@ -7,6 +7,7 @@
 #include "camera_stream.h"
 #include "door_lock.h"
 #include "esp_log.h"
+#include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "state.h"
@@ -202,7 +203,7 @@ esp_err_t hub_control_ws_start(void)
 
     static char uri[160];
     static char headers[384];
-    snprintf(uri, sizeof(uri), "ws://%s:%d/api/device/hubs/control/ws", SERVER_IP, SERVER_PORT);
+    snprintf(uri, sizeof(uri), "wss://%s:%d/api/device/hubs/control/ws", SERVER_IP, SERVER_PORT);
     snprintf(headers, sizeof(headers),
              "X-Device-Api-Key: %s\r\n"
              "X-Hub-Mac-Address: %s\r\n"
@@ -210,9 +211,10 @@ esp_err_t hub_control_ws_start(void)
              DEVICE_API_KEY, g_hub_mac, g_hub_secret);
 
     esp_websocket_client_config_t config = {
-        .uri = uri,
-        .headers = headers,
-        .task_name = "hub_ws",
+        .uri               = uri,
+        .headers           = headers,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .task_name         = "hub_ws",
         .task_stack = 6144,
         .buffer_size = 1024,
         .network_timeout_ms = 10000,

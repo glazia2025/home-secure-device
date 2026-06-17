@@ -56,7 +56,7 @@ static void event_forward_task(void *arg)
 }
 
 // ── Multi-sensor table ────────────────────────────────────────────────────
-#define MAX_SENSORS 20
+#define MAX_SENSORS 6   // ESP_NOW_MAX_ENCRYPT_PEER_NUM hard limit
 
 typedef struct {
     uint8_t mac[6];
