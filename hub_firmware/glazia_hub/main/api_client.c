@@ -207,14 +207,16 @@ void api_register_hub(void)
     }
 }
 
-void api_enable_sensor_pairing(void)
+bool api_enable_sensor_pairing(void)
 {
     ESP_LOGI(TAG, "Opening sensor pairing window on server...");
     int status = do_post("/api/device/hubs/sensor-pairing-mode", "{}", NULL, NULL);
     if (status == 200 || status == 201) {
         ESP_LOGI(TAG, "Server pairing mode active");
+        return true;
     } else {
         ESP_LOGE(TAG, "Failed to enable pairing: HTTP %d", status);
+        return false;
     }
 }
 

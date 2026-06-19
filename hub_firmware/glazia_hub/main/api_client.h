@@ -5,8 +5,8 @@
 // Called after WiFi connects — registers hub with server
 void api_register_hub(void);
 
-// Called after 2nd button press — tells server to open pairing window
-void api_enable_sensor_pairing(void);
+// Tells server to open the sensor pairing window. Returns true on success.
+bool api_enable_sensor_pairing(void);
 
 // Poll server for a pending sensor whose provision_key has not been delivered yet.
 // On success: fills MAC/key and optional name/zone outputs. Server clears the key

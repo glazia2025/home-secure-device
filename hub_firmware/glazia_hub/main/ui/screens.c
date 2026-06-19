@@ -144,13 +144,9 @@ static void create_home_content(lv_obj_t *root)
 
     objects.cont_logo_card = card(root, PAGE_X, 8, PAGE_W, 56, 13);
     objects.obj0 = lv_img_create(objects.cont_logo_card);
-    lv_obj_set_pos(objects.obj0, -10, -10);
-    lv_img_set_src(objects.obj0, &img_logo_hub);
-    uint32_t logo_max = img_logo_hub.header.w > img_logo_hub.header.h ?
-                        img_logo_hub.header.w : img_logo_hub.header.h;
-    if (logo_max > 0) {
-        lv_img_set_zoom(objects.obj0, (uint16_t)((36U * 256U) / logo_max));
-    }
+    lv_obj_set_pos(objects.obj0, -23, -23);
+    lv_img_set_src(objects.obj0, &img_gz_logo);
+    lv_img_set_zoom(objects.obj0, 135);
     lv_obj_clear_flag(objects.obj0, LV_OBJ_FLAG_SCROLLABLE);
     objects.welcome_home = label(objects.cont_logo_card, "Welcome", 56, 9, 158, 18,
                                  &lv_font_montserrat_14, UI_COLOR_TEXT_PRIMARY,
@@ -292,11 +288,58 @@ static void create_home_content(lv_obj_t *root)
     create_bottom_bar(root);
 }
 
+#define WELCOME_RING_CX      120
+#define WELCOME_RING_CY      108
+#define WELCOME_RING_MIN     100
+#define WELCOME_RING_MAX     190
+#define WELCOME_RING_OPA     160
+#define WELCOME_NUM_RINGS      3
+#define WELCOME_RING_PERIOD 2400
+
+static void ring_anim_cb(void *obj, int32_t v)
+{
+    int32_t sz = WELCOME_RING_MIN + ((WELCOME_RING_MAX - WELCOME_RING_MIN) * v) / 256;
+    lv_obj_set_size((lv_obj_t *)obj, (lv_coord_t)sz, (lv_coord_t)sz);
+    lv_obj_set_pos((lv_obj_t *)obj,
+                   (lv_coord_t)(WELCOME_RING_CX - sz / 2),
+                   (lv_coord_t)(WELCOME_RING_CY - sz / 2));
+    lv_opa_t opa = (lv_opa_t)((WELCOME_RING_OPA * (256 - v)) / 256);
+    lv_obj_set_style_opa((lv_obj_t *)obj, opa, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
 void create_screen_hub_register_welcome(void)
 {
     lv_obj_t *obj = lv_obj_create(0);
     objects.hub_register_welcome = obj;
     base_screen(obj);
+
+    for (int i = 0; i < WELCOME_NUM_RINGS; i++) {
+        lv_obj_t *ring = lv_arc_create(obj);
+        lv_arc_set_angles(ring, 0, 359);
+        lv_obj_set_style_arc_color(ring, lv_color_hex(UI_COLOR_VIOLET),
+                                   LV_PART_INDICATOR | LV_STATE_DEFAULT);
+        lv_obj_set_style_arc_width(ring, 2, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+        lv_obj_set_style_arc_opa(ring, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_opa(ring, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
+        lv_obj_set_size(ring, WELCOME_RING_MIN, WELCOME_RING_MIN);
+        lv_obj_set_pos(ring,
+                       WELCOME_RING_CX - WELCOME_RING_MIN / 2,
+                       WELCOME_RING_CY - WELCOME_RING_MIN / 2);
+        lv_obj_set_style_opa(ring, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, ring);
+        lv_anim_set_exec_cb(&a, ring_anim_cb);
+        lv_anim_set_values(&a, 0, 256);
+        lv_anim_set_time(&a, WELCOME_RING_PERIOD);
+        lv_anim_set_delay(&a, i * (WELCOME_RING_PERIOD / WELCOME_NUM_RINGS));
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_repeat_delay(&a, 0);
+        lv_anim_start(&a);
+    }
 
     objects.reg_welcome_logo = lv_img_create(obj);
     lv_img_set_src(objects.reg_welcome_logo, &img_gz_logo);
@@ -341,12 +384,9 @@ void create_screen_hub_register_qr(void)
     lv_obj_t *hdr = card(obj, PAGE_X, 8, PAGE_W, 56, 13);
 
     lv_obj_t *logo_img = lv_img_create(hdr);
-    lv_obj_set_pos(logo_img, -10, -10);
-    lv_img_set_src(logo_img, &img_logo_hub);
-    uint32_t logo_max = img_logo_hub.header.w > img_logo_hub.header.h
-                        ? img_logo_hub.header.w : img_logo_hub.header.h;
-    if (logo_max > 0)
-        lv_img_set_zoom(logo_img, (uint16_t)((36U * 256U) / logo_max));
+    lv_obj_set_pos(logo_img, -23, -23);
+    lv_img_set_src(logo_img, &img_gz_logo);
+    lv_img_set_zoom(logo_img, 135);
     lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_SCROLLABLE);
 
     label(hdr, "Welcome", 56, 9, 158, 18,
@@ -480,16 +520,12 @@ void create_screen_about_glazia()
     add_nav_title(obj, "About", UI_COLOR_VIOLET, &objects.obj47);
 
     lv_obj_t *logo = lv_img_create(obj);
-    lv_obj_set_pos(logo, 80, 40);
-    lv_img_set_src(logo, &img_logo_hub);
-    uint32_t logo_max = img_logo_hub.header.w > img_logo_hub.header.h ?
-                        img_logo_hub.header.w : img_logo_hub.header.h;
-    if (logo_max > 0) {
-        lv_img_set_zoom(logo, (uint16_t)((44U * 256U) / logo_max));
-    }
+    lv_img_set_src(logo, &img_gz_logo);
+    lv_img_set_zoom(logo, 200);
+    lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 45);
     lv_obj_clear_flag(logo, LV_OBJ_FLAG_SCROLLABLE);
-    label(obj, "About Glazia", 0, 108, SCREEN_W, 18, &lv_font_montserrat_14,
-          UI_COLOR_TEXT_PRIMARY, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+    // label(obj, "About Glazia", 0, 108, SCREEN_W, 18, &lv_font_montserrat_14,
+    //       UI_COLOR_TEXT_PRIMARY, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
 
     lv_obj_t *body = card(obj, PAGE_X, 134, PAGE_W, 166, 13);
     lv_obj_set_style_pad_all(body, 0, LV_PART_MAIN | LV_STATE_DEFAULT);

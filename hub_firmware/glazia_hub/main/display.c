@@ -496,7 +496,8 @@ static esp_err_t lcd_hw_init(void)
     vTaskDelay(pdMS_TO_TICKS(50));
 
     /* Hand off to LVGL port */
-    const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    port_cfg.task_stack = 8192;
     ESP_LOGI(TAG, "Display init: LVGL port init");
     err = lvgl_port_init(&port_cfg);
     if (err != ESP_OK) {

@@ -18,9 +18,12 @@ static const char *TAG = "BUTTON";
 // ── Sensor pairing: 2-minute polling window ───────────────────────────────
 #define SENSOR_PAIR_TIMEOUT_MS   (2 * 60 * 1000)   // 2 minutes total
 #define SENSOR_POLL_INTERVAL_MS  3000               // check server every 3 s
+#define SENSOR_PAIR_START_STACK  4096
+#define SENSOR_POLL_STACK        4096
 
 static TimerHandle_t s_pair_timer = NULL;
 static TaskHandle_t  s_poll_task  = NULL;
+static TaskHandle_t  s_pair_start_task = NULL;
 static bool          s_pair_sensor_claimed = false;
 
 static void start_hub_pairing(void)
@@ -46,6 +49,7 @@ static void pairing_timeout_cb(TimerHandle_t xTimer)
 // claimed. The remaining pairing window is reserved for the ESP-NOW handshake.
 static void sensor_poll_task(void *arg)
 {
+    (void)arg;
     char sensor_mac[18]    = {0};
     char provision_key[33] = {0};
     char sensor_name[32]   = {0};
@@ -73,32 +77,69 @@ static void sensor_poll_task(void *arg)
     vTaskDelete(NULL);
 }
 
-void sensor_pairing_open_window(void)
+static void sensor_pairing_start_task(void *arg)
 {
-    if (g_mode != MODE_OPERATIONAL && g_mode != MODE_SENSOR_PAIRING) {
-        ESP_LOGW(TAG, "Cannot open sensor pairing from mode %d", g_mode);
+    (void)arg;
+
+    if (!api_enable_sensor_pairing()) {
+        ESP_LOGW(TAG, "Sensor pairing server window failed; returning to operational mode");
+        g_mode = MODE_OPERATIONAL;
+        s_pair_sensor_claimed = false;
+        display_show_dashboard(true);
+        s_pair_start_task = NULL;
+        vTaskDelete(NULL);
         return;
     }
-
-    g_mode = MODE_SENSOR_PAIRING;
-    s_pair_sensor_claimed = false;
-    ESP_LOGI(TAG, "Mode transition: SENSOR_PAIRING");
-    api_enable_sensor_pairing();
 
     if (s_pair_timer) {
         xTimerReset(s_pair_timer, pdMS_TO_TICKS(100));
     }
 
     if (s_poll_task == NULL) {
-        if (xTaskCreate(sensor_poll_task, "sensor_poll", 4096, NULL, 5, &s_poll_task) != pdPASS) {
+        if (xTaskCreate(sensor_poll_task, "sensor_poll", SENSOR_POLL_STACK, NULL, 5, &s_poll_task) != pdPASS) {
             ESP_LOGE(TAG, "Failed to create sensor pairing poll task");
             s_poll_task = NULL;
+            if (s_pair_timer) {
+                xTimerStop(s_pair_timer, pdMS_TO_TICKS(100));
+            }
+            g_mode = MODE_OPERATIONAL;
+            display_show_dashboard(true);
+            s_pair_start_task = NULL;
+            vTaskDelete(NULL);
+            return;
         }
     } else {
         ESP_LOGI(TAG, "Sensor pairing poll task already running");
     }
 
     ESP_LOGI(TAG, "Sensor pairing window opened (2 min)");
+    s_pair_start_task = NULL;
+    vTaskDelete(NULL);
+    return;
+}
+
+void sensor_pairing_open_window(void)
+{
+    if (g_mode != MODE_OPERATIONAL && g_mode != MODE_SENSOR_PAIRING) {
+        ESP_LOGW(TAG, "Cannot open sensor pairing from mode %d", g_mode);
+        return;
+    }
+    if (s_pair_start_task != NULL) {
+        ESP_LOGI(TAG, "Sensor pairing start already in progress");
+        return;
+    }
+
+    g_mode = MODE_SENSOR_PAIRING;
+    s_pair_sensor_claimed = false;
+    ESP_LOGI(TAG, "Mode transition: SENSOR_PAIRING");
+
+    if (xTaskCreate(sensor_pairing_start_task, "sensor_pair_start",
+                    SENSOR_PAIR_START_STACK, NULL, 5, &s_pair_start_task) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create sensor pairing start task");
+        s_pair_start_task = NULL;
+        g_mode = MODE_OPERATIONAL;
+        display_show_dashboard(true);
+    }
 }
 
 // ── Button task ───────────────────────────────────────────────────────────
