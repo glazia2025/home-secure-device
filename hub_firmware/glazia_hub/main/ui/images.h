@@ -25,6 +25,7 @@ extern const lv_img_dsc_t img_fwd;
 extern const lv_img_dsc_t img_sensor;
 extern const lv_img_dsc_t img_fs_img;
 extern const lv_img_dsc_t img_tick;
+extern const lv_img_dsc_t img_gz_logo;
 
 #ifndef EXT_IMG_DESC_T
 #define EXT_IMG_DESC_T

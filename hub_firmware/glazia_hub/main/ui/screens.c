@@ -298,29 +298,9 @@ void create_screen_hub_register_welcome(void)
     objects.hub_register_welcome = obj;
     base_screen(obj);
 
-    const lv_coord_t ring_center_y = 108;
-    static const lv_coord_t ring_sizes[] = {96, 144, 192};
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *ring = lv_obj_create(obj);
-        lv_coord_t sz = ring_sizes[i];
-        lv_obj_set_size(ring, sz, sz);
-        lv_obj_align(ring, LV_ALIGN_TOP_MID, 0, ring_center_y - sz / 2);
-        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(ring,
-            lv_color_hex(UI_COLOR_TEXT_DIM), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_opa(ring, (lv_opa_t)(30 - i * 8), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(ring, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    }
-
     objects.reg_welcome_logo = lv_img_create(obj);
-    lv_img_set_src(objects.reg_welcome_logo, &img_logo_hub);
-    uint32_t logo_max = img_logo_hub.header.w > img_logo_hub.header.h
-                        ? img_logo_hub.header.w : img_logo_hub.header.h;
-    if (logo_max > 0)
-        lv_img_set_zoom(objects.reg_welcome_logo, (uint16_t)((52U * 256U) / logo_max));
-    lv_obj_align(objects.reg_welcome_logo, LV_ALIGN_TOP_MID, 0, ring_center_y - 40);
+    lv_img_set_src(objects.reg_welcome_logo, &img_gz_logo);
+    lv_obj_align(objects.reg_welcome_logo, LV_ALIGN_TOP_MID, 0, 58);
     lv_obj_clear_flag(objects.reg_welcome_logo, LV_OBJ_FLAG_SCROLLABLE);
 
     label(obj, "Your Hub for Smarter Living", 0, 176, SCREEN_W, 16,
