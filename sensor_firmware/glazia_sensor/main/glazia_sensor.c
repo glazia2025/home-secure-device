@@ -164,6 +164,18 @@ static void normalize_mac_string(char *mac) {
   }
 }
 
+static void mask_prov_key(const char *key, char *out, size_t out_len) {
+  size_t len = key ? strlen(key) : 0;
+  if (!out || out_len == 0) {
+    return;
+  }
+  if (len >= 8) {
+    snprintf(out, out_len, "%.4s...%.4s", key, key + len - 4);
+  } else {
+    snprintf(out, out_len, "<too-short>");
+  }
+}
+
 static void log_sensor_identity(const char *context) {
   ESP_LOGI(TAG, "===========================================");
   ESP_LOGI(TAG, "%s", context ? context : "Sensor identity");
@@ -573,13 +585,19 @@ static int gatt_write_cb(uint16_t conn_handle, uint16_t attr_handle,
     ESP_LOGI(TAG, "[DEV-LOG:REMOVE_BEFORE_PROD] BLE: hub_mac = %s", s_ble_hub_mac);
   } else if (uuid16 == 0xFF11) {
     uint16_t n = data_len < 32 ? data_len : 32;
+    char masked_key[16] = {0};
     os_mbuf_copydata(ctxt->om, 0, n, s_ble_prov_key);
     s_ble_prov_key[n] = '\0';
-    ESP_LOGI(TAG, "BLE: provision_key received (%d chars)", n);
+    mask_prov_key(s_ble_prov_key, masked_key, sizeof(masked_key));
+    ESP_LOGI(TAG, "[DEV-LOG:REMOVE_BEFORE_PROD] BLE: prov_key = %s (%d chars)",
+             masked_key, n);
   }
 
   // Trigger when both are valid; enforce MAC format before accepting (E6)
   if (is_valid_mac_format(s_ble_hub_mac) && strlen(s_ble_prov_key) == 32) {
+    if (!s_ble_got_creds) {
+      ESP_LOGI(TAG, "BLE: valid hub_mac and prov_key received");
+    }
     s_ble_got_creds = true;
     s_ble_conn_handle = conn_handle;
     xSemaphoreGive(s_ble_done_sem);
@@ -612,6 +630,36 @@ static const struct ble_gatt_svc_def s_gatt_svcs[] = {
     {0},
 };
 
+static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
+  switch (event->type) {
+  case BLE_GAP_EVENT_CONNECT:
+    if (event->connect.status == 0) {
+      s_ble_conn_handle = event->connect.conn_handle;
+      ESP_LOGI(TAG, "BLE connected: conn_handle=%d",
+               event->connect.conn_handle);
+    } else {
+      ESP_LOGW(TAG, "BLE connection failed: status=%d",
+               event->connect.status);
+    }
+    break;
+  case BLE_GAP_EVENT_DISCONNECT:
+    ESP_LOGI(TAG, "BLE disconnected: conn_handle=%d reason=%d",
+             event->disconnect.conn.conn_handle, event->disconnect.reason);
+    if (s_ble_conn_handle == event->disconnect.conn.conn_handle) {
+      s_ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    }
+    break;
+  case BLE_GAP_EVENT_ADV_COMPLETE:
+    ESP_LOGI(TAG, "BLE advertising stopped: reason=%d",
+             event->adv_complete.reason);
+    break;
+  default:
+    break;
+  }
+
+  return 0;
+}
+
 static void ble_on_sync(void) {
   uint8_t addr_type;
   ble_hs_id_infer_auto(0, &addr_type);
@@ -628,7 +676,7 @@ static void ble_on_sync(void) {
 
   ble_gap_adv_set_fields(&fields);
   ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &adv_params,
-                    NULL, NULL);
+                    ble_gap_event_cb, NULL);
   ESP_LOGI(TAG, "BLE advertising as 'GlaziaSensor'");
 }
 
