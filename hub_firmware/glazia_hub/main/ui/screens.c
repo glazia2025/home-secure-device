@@ -152,7 +152,7 @@ static void create_home_content(lv_obj_t *root)
         lv_img_set_zoom(objects.obj0, (uint16_t)((36U * 256U) / logo_max));
     }
     lv_obj_clear_flag(objects.obj0, LV_OBJ_FLAG_SCROLLABLE);
-    objects.welcome_home = label(objects.cont_logo_card, "Welcome, user", 56, 9, 158, 18,
+    objects.welcome_home = label(objects.cont_logo_card, "Welcome", 56, 9, 158, 18,
                                  &lv_font_montserrat_14, UI_COLOR_TEXT_PRIMARY,
                                  LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
@@ -175,20 +175,20 @@ static void create_home_content(lv_obj_t *root)
                                 &lv_font_montserrat_10, UI_COLOR_TEXT_SECONDARY,
                                 LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
 
-    objects.temp_cont = card(root, PAGE_X, 100, PAGE_W, 118, 13);
+    objects.temp_cont = card(root, PAGE_X, 100, 109, 118, 13);
     objects.temp_label = lv_obj_create(objects.temp_cont);
-    lv_obj_set_pos(objects.temp_label, 14, 7);
-    lv_obj_set_size(objects.temp_label, 150, 68);
+    lv_obj_set_pos(objects.temp_label, 8, 7);
+    lv_obj_set_size(objects.temp_label, 93, 18);
     ui_style_transparent(objects.temp_label);
-    uint16_t temp_icon_zoom = (uint16_t)((13U * 256U) / img_temp_img.header.w);
-    icon(objects.temp_label, &img_temp_img, -18, -16, 94, UI_COLOR_AMBER, true);
-    objects.obj3 = label(objects.temp_label, "TEMPERATURE", 20, 1, 112, 13,
-                         &lv_font_montserrat_10, UI_COLOR_TEXT_SECONDARY,
+    uint16_t temp_icon_zoom = (uint16_t)((14U * 256U) / img_temp_img.header.w);
+    icon(objects.temp_label, &img_temp_img, -18, -17, temp_icon_zoom, UI_COLOR_AMBER, true);
+    objects.obj3 = label(objects.temp_label, "TEMP", 18, 2, 70, 14,
+                         &lv_font_montserrat_10, UI_COLOR_TEXT_PRIMARY,
                          LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
     objects.temp_arc = lv_arc_create(objects.temp_cont);
-    lv_obj_set_pos(objects.temp_arc, 40, 23);
-    lv_obj_set_size(objects.temp_arc, 70, 70);
+    lv_obj_set_pos(objects.temp_arc, 20, 23);
+    lv_obj_set_size(objects.temp_arc, 68, 68);
     lv_arc_set_bg_angles(objects.temp_arc, 145, 35);
     lv_arc_set_range(objects.temp_arc, 0, 50);
     lv_arc_set_value(objects.temp_arc, 0);
@@ -199,25 +199,64 @@ static void create_home_content(lv_obj_t *root)
     lv_obj_set_style_arc_rounded(objects.temp_arc, false,
                                  LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
-    objects.temp_val = label(objects.temp_cont, "0.0", 82, 45, 60, 18,
-                             &lv_font_montserrat_18, UI_COLOR_TEXT_PRIMARY,
+    objects.temp_val = label(objects.temp_cont, "0.0", 24, 45, 60, 18,
+                             &lv_font_montserrat_16, UI_COLOR_TEXT_PRIMARY,
                              LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
-    objects.obj6 = label(objects.temp_cont, "°C", 52, 63, 40, 20,
+    objects.obj6 = label(objects.temp_cont, "°C", 34, 63, 40, 14,
                          &lv_font_montserrat_10, UI_COLOR_TEXT_DIM,
                          LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
-    objects.obj4 = label(objects.temp_cont, "0", 35, 81, 30, 20, &lv_font_montserrat_8,
+    objects.obj4 = label(objects.temp_cont, "0", 10, 81, 30, 12, &lv_font_montserrat_8,
                          UI_COLOR_TEXT_DIM, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
-    objects.obj5 = label(objects.temp_cont, "50", 88, 81, 30, 20, &lv_font_montserrat_8,
+    objects.obj5 = label(objects.temp_cont, "50", 70, 81, 30, 12, &lv_font_montserrat_8,
                          UI_COLOR_TEXT_DIM, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
 
     objects.temp_mood = lv_obj_create(objects.temp_cont);
-    lv_obj_set_pos(objects.temp_mood, 32, 93);
-    lv_obj_set_size(objects.temp_mood, 84, 20);
+    lv_obj_set_pos(objects.temp_mood, 10, 94);
+    lv_obj_set_size(objects.temp_mood, 89, 18);
     ui_style_status_pill(objects.temp_mood);
-    objects.temp_img = dot(objects.temp_mood, 9, 7, 5, UI_COLOR_AMBER);
-    objects.obj7 = label(objects.temp_mood, "Comfortable", 17, 3, 63, 10,
-                         &lv_font_montserrat_10, UI_COLOR_AMBER,
+    objects.temp_img = dot(objects.temp_mood, 7, 6, 5, UI_COLOR_AMBER);
+    objects.obj7 = label(objects.temp_mood, "Comfortable", 14, 3, 70, 10,
+                         &lv_font_montserrat_8, UI_COLOR_AMBER,
                          LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_DOT);
+
+    objects.aqi_cont = card(root, 123, 100, 109, 118, 13);
+    objects.aqi_label = lv_obj_create(objects.aqi_cont);
+    lv_obj_set_pos(objects.aqi_label, 8, 7);
+    lv_obj_set_size(objects.aqi_label, 93, 18);
+    ui_style_transparent(objects.aqi_label);
+    objects.aqi_icon = icon(objects.aqi_label, &img_temp_img, -18, -17, temp_icon_zoom,
+                            UI_COLOR_GREEN, true);
+    label(objects.aqi_label, "AQI", 18, 2, 70, 14, &lv_font_montserrat_10,
+          UI_COLOR_TEXT_PRIMARY, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
+
+    objects.aqi_arc = lv_arc_create(objects.aqi_cont);
+    lv_obj_set_pos(objects.aqi_arc, 20, 23);
+    lv_obj_set_size(objects.aqi_arc, 68, 68);
+    lv_arc_set_bg_angles(objects.aqi_arc, 145, 35);
+    lv_arc_set_range(objects.aqi_arc, 0, 500);
+    lv_arc_set_value(objects.aqi_arc, 0);
+    lv_obj_clear_flag(objects.aqi_arc, LV_OBJ_FLAG_CLICKABLE);
+    ui_style_arc_track(objects.aqi_arc, UI_COLOR_GREEN);
+    lv_obj_set_style_arc_rounded(objects.aqi_arc, false,
+                                 LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_rounded(objects.aqi_arc, false,
+                                 LV_PART_INDICATOR | LV_STATE_DEFAULT);
+
+    objects.aqi_val = label(objects.aqi_cont, "0", 24, 45, 60, 18,
+                            &lv_font_montserrat_16, UI_COLOR_TEXT_PRIMARY,
+                            LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+    objects.aqi_min = label(objects.aqi_cont, "0", 10, 81, 30, 12, &lv_font_montserrat_8,
+                            UI_COLOR_TEXT_DIM, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+    objects.aqi_max = label(objects.aqi_cont, "500", 70, 81, 30, 12, &lv_font_montserrat_8,
+                            UI_COLOR_TEXT_DIM, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+    objects.aqi_mood = lv_obj_create(objects.aqi_cont);
+    lv_obj_set_pos(objects.aqi_mood, 10, 94);
+    lv_obj_set_size(objects.aqi_mood, 89, 18);
+    ui_style_status_pill(objects.aqi_mood);
+    objects.aqi_dot = dot(objects.aqi_mood, 7, 6, 5, UI_COLOR_GREEN);
+    objects.aqi_state = label(objects.aqi_mood, "Healthy", 14, 3, 70, 10,
+                              &lv_font_montserrat_8, UI_COLOR_GREEN,
+                              LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_DOT);
 
     objects.hum_cont = card(root, PAGE_X, 224, PAGE_W, 44, 13);
     objects.hum_label = lv_obj_create(objects.hum_cont);
@@ -226,8 +265,8 @@ static void create_home_content(lv_obj_t *root)
     ui_style_transparent(objects.hum_label);
     uint16_t hum_icon_zoom = (uint16_t)((14U * 256U) / img_hum_img.header.w);
     icon(objects.hum_label, &img_hum_img, 0, 1, hum_icon_zoom * 1.2, UI_COLOR_VIOLET, true);
-    objects.obj8 = label(objects.hum_label, "HUMIDITY", 22, 3, 70, 12,
-                         &lv_font_montserrat_10, UI_COLOR_TEXT_SECONDARY,
+    objects.obj8 = label(objects.hum_label, "HUMIDITY", 22, 2, 70, 14,
+                         &lv_font_montserrat_10, UI_COLOR_TEXT_PRIMARY,
                          LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     objects.hum_val = label(objects.hum_cont, "0", 96, 6, 31, 16,
                             &lv_font_montserrat_16, UI_COLOR_TEXT_PRIMARY,
@@ -330,7 +369,7 @@ void create_screen_hub_register_qr(void)
         lv_img_set_zoom(logo_img, (uint16_t)((36U * 256U) / logo_max));
     lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_SCROLLABLE);
 
-    label(hdr, "Welcome, user", 56, 9, 158, 18,
+    label(hdr, "Welcome", 56, 9, 158, 18,
           &lv_font_montserrat_14, UI_COLOR_TEXT_PRIMARY,
           LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 

@@ -60,6 +60,16 @@ typedef struct _objects_t {
     lv_obj_t *obj6;
     lv_obj_t *temp_mood;
     lv_obj_t *obj7;
+    lv_obj_t *aqi_cont;
+    lv_obj_t *aqi_label;
+    lv_obj_t *aqi_icon;
+    lv_obj_t *aqi_arc;
+    lv_obj_t *aqi_val;
+    lv_obj_t *aqi_min;
+    lv_obj_t *aqi_max;
+    lv_obj_t *aqi_mood;
+    lv_obj_t *aqi_dot;
+    lv_obj_t *aqi_state;
     lv_obj_t *hum_cont;
     lv_obj_t *hum_label;
     lv_obj_t *obj8;

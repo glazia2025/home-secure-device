@@ -5,6 +5,7 @@
 #include "display.h"
 #include "hub_control_ws.h"
 #include "hub_sensor.h"
+#include "aqi_sensor.h"
 #include "espnow.h"
 #include "nvs_storage.h"
 #include "fingerprint.h"
@@ -214,12 +215,18 @@ void wifi_connect(const char *ssid, const char *password)
             ESP_LOGW(TAG, "Hub sensor delayed init failed: %s", esp_err_to_name(hub_sensor_err));
         }
 
+        esp_err_t aqi_sensor_err = aqi_sensor_init();
+        if (aqi_sensor_err != ESP_OK) {
+            ESP_LOGW(TAG, "AQI sensor delayed init failed: %s", esp_err_to_name(aqi_sensor_err));
+        }
+
         ESP_LOGI(TAG, "Initializing ESP-NOW after WiFi connect");
         espnow_init();
 
         if (strlen(g_hub_secret) > 0) {
             // Already registered — go operational and restore saved sensors
             g_mode = MODE_OPERATIONAL;
+            display_user_name(g_user_name);
             display_show_dashboard(true);
             display_hub_location(g_home_name);
             ESP_LOGI(TAG, "Already registered. Mode transition: OPERATIONAL, home='%s'", g_home_name);
@@ -301,6 +308,7 @@ bool wifi_resume_from_offline_mode(void)
     espnow_reconnect_saved_sensors();
     g_mode = MODE_OPERATIONAL;
     ESP_LOGI(TAG, "Mode transition: OPERATIONAL after WiFi resume");
+    display_user_name(g_user_name);
     display_show_dashboard(true);
     display_hub_location(g_home_name);
     hub_control_ws_start();

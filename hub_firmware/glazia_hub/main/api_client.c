@@ -18,6 +18,25 @@ static char             resp_buf[1024];
 static int              resp_len  = 0;
 static SemaphoreHandle_t s_api_mutex = NULL;
 
+static const char *response_user_name(cJSON *root)
+{
+    cJSON *user = cJSON_GetObjectItem(root, "user");
+    cJSON *owner = cJSON_GetObjectItem(root, "owner");
+    cJSON *name = NULL;
+
+    if (cJSON_IsObject(user)) {
+        name = cJSON_GetObjectItem(user, "name");
+    }
+    if (!cJSON_IsString(name) && cJSON_IsObject(owner)) {
+        name = cJSON_GetObjectItem(owner, "name");
+    }
+    if (!cJSON_IsString(name)) {
+        name = cJSON_GetObjectItem(root, "userName");
+    }
+
+    return cJSON_IsString(name) && name->valuestring ? name->valuestring : NULL;
+}
+
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
     if (evt->event_id == HTTP_EVENT_ON_DATA) {
@@ -135,16 +154,35 @@ void api_register_hub(void)
             cJSON *secret = cJSON_GetObjectItem(root, "hubSecret");
             cJSON *home   = cJSON_GetObjectItem(root, "home");
 
-            if (cJSON_IsString(secret) && secret->valuestring)
+            if (cJSON_IsString(secret) && secret->valuestring) {
                 strncpy(g_hub_secret, secret->valuestring, sizeof(g_hub_secret) - 1);
+                g_hub_secret[sizeof(g_hub_secret) - 1] = '\0';
+            }
 
+            cJSON *id = NULL;
+            cJSON *name = NULL;
             if (cJSON_IsObject(home)) {
-                cJSON *id   = cJSON_GetObjectItem(home, "id");
-                cJSON *name = cJSON_GetObjectItem(home, "name");
-                if (cJSON_IsString(id)   && id->valuestring)
-                    strncpy(g_home_id,   id->valuestring,   sizeof(g_home_id)   - 1);
-                if (cJSON_IsString(name) && name->valuestring)
-                    strncpy(g_home_name, name->valuestring, sizeof(g_home_name) - 1);
+                id = cJSON_GetObjectItem(home, "id");
+                name = cJSON_GetObjectItem(home, "name");
+            }
+            if (!cJSON_IsString(id)) id = cJSON_GetObjectItem(root, "homeId");
+            if (!cJSON_IsString(name)) name = cJSON_GetObjectItem(root, "homeName");
+
+            if (cJSON_IsString(id) && id->valuestring) {
+                strncpy(g_home_id, id->valuestring, sizeof(g_home_id) - 1);
+                g_home_id[sizeof(g_home_id) - 1] = '\0';
+            }
+            if (cJSON_IsString(name) && name->valuestring) {
+                strncpy(g_home_name, name->valuestring, sizeof(g_home_name) - 1);
+                g_home_name[sizeof(g_home_name) - 1] = '\0';
+            } else {
+                ESP_LOGW(TAG, "Registration response missing home name; expected home.name or homeName");
+            }
+
+            const char *user_name = response_user_name(root);
+            if (user_name && user_name[0] != '\0') {
+                strncpy(g_user_name, user_name, sizeof(g_user_name) - 1);
+                g_user_name[sizeof(g_user_name) - 1] = '\0';
             }
 
             cJSON_Delete(root);
@@ -158,6 +196,7 @@ void api_register_hub(void)
         nvs_save_credentials();
         g_mode = MODE_OPERATIONAL;
         ESP_LOGI(TAG, "Mode transition: OPERATIONAL after registration");
+        display_user_name(g_user_name);
         display_show_dashboard(true);
         display_hub_location(g_home_name);
         fp_start_enroll_if_needed();

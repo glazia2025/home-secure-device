@@ -45,6 +45,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <time.h>
+#include <ctype.h>
 
 static const char *TAG = "DISPLAY";
 
@@ -63,6 +64,9 @@ static const char *TAG = "DISPLAY";
 #define C_RED_U32    UI_COLOR_RED
 #define C_GREEN_U32  UI_COLOR_GREEN
 #define C_T2_U32     UI_COLOR_TEXT_SECONDARY
+#define C_AQI_NOMINAL_U32   0x84CC16
+#define C_AQI_POOR_U32      0xF97316
+#define C_AQI_UNHEALTHY_U32 0xFF8247
 
 /* ── Alert thresholds ────────────────────────────────────────────────────── */
 #define TEMP_THRESH_WARM  30.0f
@@ -105,7 +109,11 @@ typedef struct {
     bool has_temp_hum;
     float temp;
     float hum;
+    bool has_aqi;
+    float aqi;
+    char aqi_state[16];
     char home_name[64];
+    char user_name[64];
 } display_cache_t;
 
 static volatile display_state_t s_display_state = DISPLAY_NOT_STARTED;
@@ -124,14 +132,19 @@ static void refresh_sensor_nodes_locked(void);
 static void set_hub_connection_status_locked(bool online);
 static void update_temp_pill_locked(float temp);
 static void update_hum_pill_locked(float hum);
+static void set_aqi_value_locked(float aqi, const char *state);
 static void update_home_datetime_locked(void);
 static void cache_copy(char *dst, size_t dst_size, const char *src);
 static void cache_lock(void);
 static void cache_unlock(void);
 static const char *nonnull_text(const char *text, const char *fallback);
+static const char *hub_location_text_locked(void);
+static void set_welcome_text_locked(const char *user_name);
+static void set_cached_welcome_text_locked(void);
 static const char *fingerprint_phase_for_title(const char *title);
 static const char *fingerprint_instruction_for_phase(const char *phase);
 static const char *fingerprint_message_normalize(const char *message);
+static void align_dashboard_value_locked(lv_obj_t *value, lv_obj_t *arc);
 static void align_fingerprint_text_locked(void);
 static void show_fingerprint_screen_locked(const char *title, const char *prompt);
 static bool display_is_ready(void);
@@ -695,6 +708,51 @@ static const char *nonnull_text(const char *text, const char *fallback)
     return (text && text[0]) ? text : fallback;
 }
 
+static const char *hub_location_text_locked(void)
+{
+    if (s_display_cache.home_name[0] != '\0') {
+        return s_display_cache.home_name;
+    }
+    if (g_home_name[0] != '\0') {
+        return g_home_name;
+    }
+    return "HUB_loc";
+}
+
+static void set_welcome_text_locked(const char *user_name)
+{
+    char greeting[80] = "Welcome";
+    const unsigned char *start = (const unsigned char *)(user_name ? user_name : "");
+
+    while (*start && isspace(*start)) {
+        start++;
+    }
+
+    if (*start) {
+        char first_name[64];
+        size_t len = 0;
+        while (start[len] && !isspace(start[len]) && len < sizeof(first_name) - 1) {
+            first_name[len] = (char)start[len];
+            len++;
+        }
+        first_name[len] = '\0';
+        if (len > 0) {
+            snprintf(greeting, sizeof(greeting), "Welcome, %s", first_name);
+        }
+    }
+
+    set_label_locked(objects.welcome_home, greeting);
+}
+
+static void set_cached_welcome_text_locked(void)
+{
+    char user_name[sizeof(s_display_cache.user_name)];
+    cache_lock();
+    cache_copy(user_name, sizeof(user_name), s_display_cache.user_name);
+    cache_unlock();
+    set_welcome_text_locked(user_name);
+}
+
 static void set_status_pill_style_locked(lv_obj_t *pill, uint32_t color, uint32_t bg)
 {
     if (!pill) return;
@@ -725,6 +783,7 @@ static void set_hub_connection_status_locked(bool online)
 {
     load_screen_locked(SCREEN_ID_HUB_ONLINE);
     update_home_datetime_locked();
+    set_cached_welcome_text_locked();
     set_switch_checked_locked(objects.obj1, online);
 
     if (online) {
@@ -741,7 +800,7 @@ static void set_hub_connection_status_locked(bool online)
             lv_obj_set_style_text_color(objects.hub_location, lv_color_hex(C_GREEN_U32),
                                         LV_PART_MAIN | LV_STATE_DEFAULT);
         set_label_locked(objects.hub_status, "Online");
-        set_label_locked(objects.hub_location, strlen(g_home_name) > 0 ? g_home_name : "HUB_loc");
+        set_label_locked(objects.hub_location, hub_location_text_locked());
 
         int n = espnow_get_sensor_count();
         char info_buf[64];
@@ -761,8 +820,73 @@ static void set_hub_connection_status_locked(bool online)
             lv_obj_set_style_text_color(objects.hub_location, lv_color_hex(C_RED_U32),
                                         LV_PART_MAIN | LV_STATE_DEFAULT);
         set_label_locked(objects.hub_status, "Offline");
-        set_label_locked(objects.hub_location, strlen(g_home_name) > 0 ? g_home_name : "HUB_loc");
+        set_label_locked(objects.hub_location, hub_location_text_locked());
         set_label_locked(objects.sensor_info, "0 nodes active - Sensors disconnected");
+    }
+}
+
+static const char *aqi_display_state(const char *state)
+{
+    if (!state) return "Healthy";
+    if (strcmp(state, "good") == 0 || strcmp(state, "very_good") == 0 ||
+        strcmp(state, "ver_good") == 0) return "Healthy";
+    if (strcmp(state, "nominal") == 0) return "Nominal";
+    if (strcmp(state, "moderate") == 0) return "Moderate";
+    if (strcmp(state, "poor") == 0) return "Poor";
+    if (strcmp(state, "very_poor") == 0 || strcmp(state, "ver_poor") == 0) return "Unhealthy";
+    if (strcmp(state, "severe") == 0) return "Severe";
+    return "Unknown";
+}
+
+static uint32_t aqi_state_color(const char *state)
+{
+    if (!state || strcmp(state, "good") == 0 || strcmp(state, "very_good") == 0 ||
+        strcmp(state, "ver_good") == 0) return C_GREEN_U32;
+    if (strcmp(state, "nominal") == 0) return C_AQI_NOMINAL_U32;
+    if (strcmp(state, "moderate") == 0) return C_AMBER_U32;
+    if (strcmp(state, "poor") == 0) return C_AQI_POOR_U32;
+    if (strcmp(state, "very_poor") == 0 || strcmp(state, "ver_poor") == 0)
+        return C_AQI_UNHEALTHY_U32;
+    if (strcmp(state, "severe") == 0) return C_RED_U32;
+    return C_T2_U32;
+}
+
+static void set_aqi_value_locked(float aqi, const char *state)
+{
+    if (aqi < 0.0f) aqi = 0.0f;
+    if (aqi > 500.0f) aqi = 500.0f;
+
+    char value[16];
+    snprintf(value, sizeof(value), "%.0f", aqi);
+    set_label_locked(objects.aqi_val, value);
+    align_dashboard_value_locked(objects.aqi_val, objects.aqi_arc);
+    if (objects.aqi_arc) lv_arc_set_value(objects.aqi_arc, (int)aqi);
+    set_label_locked(objects.aqi_state, aqi_display_state(state));
+
+    uint32_t color = aqi_state_color(state);
+    bool alert = strcmp(aqi_display_state(state), "Unhealthy") == 0 ||
+                 strcmp(aqi_display_state(state), "Severe") == 0;
+    if (objects.aqi_arc) {
+        lv_obj_set_style_arc_color(objects.aqi_arc, lv_color_hex(color),
+                                   LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    }
+    if (objects.aqi_dot) {
+        lv_obj_set_style_bg_color(objects.aqi_dot, lv_color_hex(color),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    if (objects.aqi_state) {
+        lv_obj_set_style_text_color(objects.aqi_state, lv_color_hex(color),
+                                    LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    set_status_pill_style_locked(objects.aqi_mood, color,
+                                 alert ? UI_COLOR_ALERT_BG : UI_COLOR_PANEL);
+    if (objects.aqi_cont) {
+        lv_obj_set_style_bg_color(objects.aqi_cont,
+                                  lv_color_hex(alert ? UI_COLOR_ALERT_BG : UI_COLOR_CARD),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(objects.aqi_cont,
+                                      lv_color_hex(alert ? color : UI_COLOR_CARD_BORDER),
+                                      LV_PART_MAIN | LV_STATE_DEFAULT);
     }
 }
 
@@ -969,6 +1093,9 @@ static void cache_apply_locked(void)
     if (cache.has_temp_hum) {
         set_dashboard_values_locked(cache.temp, cache.hum);
     }
+    if (cache.has_aqi) {
+        set_aqi_value_locked(cache.aqi, cache.aqi_state);
+    }
 }
 
 static void nav_back_cb(lv_event_t *e)
@@ -1152,6 +1279,15 @@ static void configure_screen_locked(enum ScreensEnum screen)
         float hum = s_display_cache.hum;
         cache_unlock();
         set_dashboard_values_locked(has_temp_hum ? temp : 0.0f, has_temp_hum ? hum : 0.0f);
+        cache_lock();
+        bool has_aqi = s_display_cache.has_aqi;
+        float aqi = s_display_cache.aqi;
+        char aqi_state[sizeof(s_display_cache.aqi_state)];
+        cache_copy(aqi_state, sizeof(aqi_state), s_display_cache.aqi_state);
+        cache_unlock();
+        set_aqi_value_locked(has_aqi ? aqi : 0.0f, has_aqi ? aqi_state : "good");
+        set_label_locked(objects.hub_location, hub_location_text_locked());
+        set_cached_welcome_text_locked();
         break;
 
     case SCREEN_ID_SETTINGS_MENU:
@@ -1333,6 +1469,7 @@ void display_show_setup_prompt(void)
     s_display_cache.line1[0] = '\0';
     s_display_cache.line2[0] = '\0';
     s_display_cache.home_name[0] = '\0';
+    s_display_cache.user_name[0] = '\0';
     cache_unlock();
 
     ESP_LOGI(TAG, "Display setup prompt");
@@ -1385,7 +1522,7 @@ void display_hub_location(const char *home_name)
     if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
         if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
             set_label_locked(objects.hub_status, s_ui_online ? "Online" : "Offline");
-            set_label_locked(objects.hub_location, home_name);
+            set_label_locked(objects.hub_location, hub_location_text_locked());
             if (objects.hub_status)
                 lv_obj_set_style_text_color(objects.hub_status,
                                             lv_color_hex(s_ui_online ? C_GREEN_U32 : C_RED_U32),
@@ -1397,6 +1534,38 @@ void display_hub_location(const char *home_name)
         }
         lvgl_port_unlock();
     }
+}
+
+void display_user_name(const char *user_name)
+{
+    cache_lock();
+    cache_copy(s_display_cache.user_name, sizeof(s_display_cache.user_name), user_name);
+    cache_unlock();
+
+    if (!display_is_ready()) {
+        return;
+    }
+
+    if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+        if (s_current_screen == SCREEN_ID_HUB_ONLINE) {
+            set_welcome_text_locked(user_name);
+        }
+        lvgl_port_unlock();
+    }
+}
+
+void display_update_aqi(float aqi, const char *state)
+{
+    cache_lock();
+    s_display_cache.has_aqi = true;
+    s_display_cache.aqi = aqi;
+    cache_copy(s_display_cache.aqi_state, sizeof(s_display_cache.aqi_state), state);
+    cache_unlock();
+
+    if (!display_is_ready()) return;
+    if (!lvgl_port_lock(pdMS_TO_TICKS(200))) return;
+    set_aqi_value_locked(aqi, state);
+    lvgl_port_unlock();
 }
 
 void display_sensor_location(const char *mac_str)

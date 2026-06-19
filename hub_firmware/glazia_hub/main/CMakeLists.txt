@@ -13,6 +13,7 @@ idf_component_register(
         "espnow.c"
         "display.c"
         "hub_sensor.c"
+        "aqi_sensor.c"
         "hub_control_ws.c"
         "fingerprint.c"
         "nvs_storage.c"
@@ -36,4 +37,5 @@ idf_component_register(
         esp_lcd_touch
         esp_lcd_touch_xpt2046
         esp_timer
+        esp_adc
 )

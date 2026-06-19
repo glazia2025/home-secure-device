@@ -22,6 +22,9 @@ void display_fingerprint_status(const char *message);
 // Sends: HUB_LOC:<home_name>
 void display_hub_location(const char *home_name);
 
+// Push the account name to the dashboard greeting. Only the first name is shown.
+void display_user_name(const char *user_name);
+
 // Push current sensor table to the display — maps to sensor_list_label
 // Reads sensor state from espnow module and sends: SENSORS:S1|Unknown|ON;...
 void display_sensor_list(void);
@@ -36,6 +39,7 @@ void display_show_fingerprint_screen(const char *title, const char *prompt);
 void display_fingerprint_phase(const char *phase, const char *message);
 void display_fingerprint_progress(uint8_t percent);
 void display_update_temp_hum(float temp, float hum);
+void display_update_aqi(float aqi, const char *state);
 void display_refresh_sensor_nodes(void);
 void display_sensor_added_notification(const char *name);
 void display_clear_sensor_notifications(void);
