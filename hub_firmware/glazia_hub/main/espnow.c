@@ -33,7 +33,7 @@ typedef struct {
 } __attribute__((packed)) espnow_packet_t;
 
 // ── ESP-NOW worker queues ──────────────────────────────────────────────────
-#define EVENT_QUEUE_DEPTH   20
+#define EVENT_QUEUE_DEPTH   40
 #define COMMIT_QUEUE_DEPTH  4
 #define COMMIT_WORKER_STACK 3072
 
@@ -148,7 +148,8 @@ static void commit_retry_worker_task(void *arg)
 }
 
 // ── Multi-sensor table ────────────────────────────────────────────────────
-#define MAX_SENSORS 6   // ESP_NOW_MAX_ENCRYPT_PEER_NUM hard limit
+// sdkconfig: CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM=10
+#define MAX_SENSORS 10
 
 typedef struct {
     uint8_t mac[6];
@@ -498,10 +499,59 @@ static void start_hello_retry(sensor_entry_t *entry, int max_retries, bool is_re
     arg->entry        = entry;
     arg->max_retries  = max_retries;
     arg->is_reconnect = is_reconnect;
-    if (xTaskCreate(hello_retry_task, "hello_retry", 3072, arg, 5, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 3072, arg, 5, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create HELLO retry task");
         free(arg);
     }
+}
+
+// ── Reconnect manager: single task replaces N parallel hello_retry tasks ──
+// Sends HELLO to all saved sensors every 200 ms in a tight burst.
+// Each sensor gets the same HELLO cadence as the per-sensor approach but
+// from one 3072-byte task instead of N × 3072 bytes of parallel tasks.
+
+typedef struct {
+    int  indices[MAX_SENSORS];
+    int  count;
+} reconnect_mgr_arg_t;
+
+static void reconnect_manager_task(void *arg)
+{
+    reconnect_mgr_arg_t *a = (reconnect_mgr_arg_t *)arg;
+    int  count = a->count;
+    int  indices[MAX_SENSORS];
+    memcpy(indices, a->indices, count * sizeof(int));
+    free(a);
+
+    uint8_t primary; wifi_second_chan_t second;
+    esp_wifi_get_channel(&primary, &second);
+
+    ESP_LOGI(TAG, "Reconnect manager: %d sensor(s), channel=%d, max 150 rounds", count, primary);
+
+    for (int round = 0; round < 150; round++) {
+        bool all_paired = true;
+        for (int i = 0; i < count; i++) {
+            sensor_entry_t *entry = &s_sensors[indices[i]];
+            if (entry->paired) continue;
+            all_paired = false;
+
+            char mac_str[18];
+            mac_bytes_to_str(entry->mac, mac_str);
+
+            espnow_packet_t pkt = { .type = PKT_HELLO };
+            snprintf(pkt.payload, sizeof(pkt.payload), "H:%s;S:%s;N:%s;C:%u",
+                     g_hub_mac, mac_str, entry->nonce, primary);
+            esp_now_send(entry->mac, (uint8_t *)&pkt, sizeof(pkt));
+        }
+        if (all_paired) {
+            ESP_LOGI(TAG, "Reconnect manager: all sensors paired after %d rounds", round + 1);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    ESP_LOGI(TAG, "Reconnect manager task done");
+    vTaskDelete(NULL);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -519,7 +569,7 @@ void espnow_init(void)
         log_internal_heap("event queue create failed");
         return;
     }
-    if (xTaskCreate(event_forward_task, "evt_fwd", 8192, NULL, 4, &s_event_task_handle) != pdPASS) {
+    if (xTaskCreatePinnedToCore(event_forward_task, "evt_fwd", 6144, NULL, 4, &s_event_task_handle, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create event forward task");
         log_internal_heap("event forward task create failed");
         vQueueDelete(s_event_queue);
@@ -537,8 +587,8 @@ void espnow_init(void)
         s_event_queue = NULL;
         return;
     }
-    if (xTaskCreate(commit_retry_worker_task, "commit_retry", COMMIT_WORKER_STACK,
-                    NULL, 5, &s_commit_task_handle) != pdPASS) {
+    if (xTaskCreatePinnedToCore(commit_retry_worker_task, "commit_retry", COMMIT_WORKER_STACK,
+                                NULL, 5, &s_commit_task_handle, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create COMMIT retry worker task");
         log_internal_heap("COMMIT worker task create failed");
         vQueueDelete(s_commit_queue);
@@ -734,9 +784,6 @@ void espnow_reconnect_saved_sensors(void)
             ESP_LOGI(TAG, "Saved ESP-NOW peer already exists: %s", macs[i]);
         }
 
-        // Send HELLO to re-establish the encrypted channel after reboot.
-        // 20 retries (60s) to account for sensor boot time.
-        start_hello_retry(entry, 150, true);
     }
 
     free(macs);
@@ -746,6 +793,32 @@ void espnow_reconnect_saved_sensors(void)
 
     // Push initial sensor list to display (all OFF until ACK received)
     display_sensor_list();
+
+    if (s_sensor_count == 0) return;
+
+    // Spawn a single reconnect manager instead of one hello_retry task per sensor.
+    // All sensors get HELLO every 200 ms from one task (3072 B) rather than
+    // N tasks × 3072 B running in parallel for 30 s.
+    reconnect_mgr_arg_t *mgr_arg = malloc(sizeof(reconnect_mgr_arg_t));
+    if (!mgr_arg) {
+        ESP_LOGE(TAG, "OOM for reconnect manager — falling back to per-sensor tasks");
+        for (int i = 0; i < s_sensor_count; i++) {
+            start_hello_retry(&s_sensors[i], 150, true);
+        }
+        return;
+    }
+    mgr_arg->count = s_sensor_count;
+    for (int i = 0; i < s_sensor_count; i++) {
+        mgr_arg->indices[i] = i;
+    }
+    if (xTaskCreatePinnedToCore(reconnect_manager_task, "reconnect_mgr", 3072,
+                                mgr_arg, 5, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create reconnect manager task — falling back to per-sensor tasks");
+        free(mgr_arg);
+        for (int i = 0; i < s_sensor_count; i++) {
+            start_hello_retry(&s_sensors[i], 150, true);
+        }
+    }
 }
 
 int espnow_get_sensor_count(void)

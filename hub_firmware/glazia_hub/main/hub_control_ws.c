@@ -77,8 +77,8 @@ static esp_err_t ensure_username_worker(void)
         return ESP_ERR_NO_MEM;
     }
 
-    if (xTaskCreate(username_update_task, "hub_ws_user", 3072, NULL, 4,
-                    &s_username_task) != pdPASS) {
+    if (xTaskCreatePinnedToCore(username_update_task, "hub_ws_user", 2048, NULL, 4,
+                                &s_username_task, 0) != pdPASS) {
         vQueueDelete(s_username_queue);
         s_username_queue = NULL;
         return ESP_ERR_NO_MEM;

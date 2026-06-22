@@ -686,7 +686,7 @@ bool fp_start_enroll_if_needed(void)
         return true;
     }
 
-    if (xTaskCreate(fp_enroll_task, "fp_enroll", 4096, NULL, 5, &s_enroll_task) != pdPASS) {
+    if (xTaskCreatePinnedToCore(fp_enroll_task, "fp_enroll", 3072, NULL, 5, &s_enroll_task, 1) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create fingerprint enrollment task");
         s_enroll_task = NULL;
         return false;

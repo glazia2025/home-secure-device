@@ -510,7 +510,7 @@ esp_err_t camera_stream_start(const char *stream_session_id)
     }
 
     s_should_run = true;
-    if (xTaskCreate(camera_task, "camera_stream", 8192, NULL, 4, &s_task) != pdPASS) {
+    if (xTaskCreatePinnedToCore(camera_task, "camera_stream", 6144, NULL, 4, &s_task, 1) != pdPASS) {
         s_should_run = false;
         ESP_LOGE(TAG, "Failed to create camera stream task");
         return ESP_ERR_NO_MEM;

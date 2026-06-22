@@ -19,7 +19,7 @@ static const char *TAG = "BUTTON";
 // ── Sensor pairing: 2-minute polling window ───────────────────────────────
 #define SENSOR_PAIR_TIMEOUT_MS   (2 * 60 * 1000)   // 2 minutes total
 #define SENSOR_POLL_INTERVAL_MS  3000               // check server every 3 s
-#define SENSOR_POLL_STACK        8192
+#define SENSOR_POLL_STACK        6144
 
 static TimerHandle_t  s_pair_timer          = NULL;
 static TaskHandle_t   s_poll_task           = NULL;
@@ -173,6 +173,6 @@ void button_init(void)
         pairing_timeout_cb
     );
 
-    xTaskCreate(sensor_poll_task, "sensor_poll", SENSOR_POLL_STACK, NULL, 5, &s_poll_task);
-    xTaskCreate(button_task, "button_task", 5120, NULL, 10, NULL);
+    xTaskCreatePinnedToCore(sensor_poll_task, "sensor_poll", SENSOR_POLL_STACK, NULL, 5, &s_poll_task, 0);
+    xTaskCreatePinnedToCore(button_task, "button_task", 4096, NULL, 10, NULL, 1);
 }

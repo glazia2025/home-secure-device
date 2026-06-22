@@ -14,9 +14,16 @@
 
 static const char *TAG = "API";
 
-static char             resp_buf[1024];
-static int              resp_len  = 0;
-static SemaphoreHandle_t s_api_mutex = NULL;
+// ── Control lane (register, pairing, pending-sensor poll) ────────────────
+static char              resp_buf[1024];
+static int               resp_len      = 0;
+static SemaphoreHandle_t s_api_mutex   = NULL;
+
+// ── Event lane (send_event, confirm_sensor) ───────────────────────────────
+// Separate buffer + mutex so event floods never block the control lane.
+static char              s_evt_resp_buf[256];
+static int               s_evt_resp_len = 0;
+static SemaphoreHandle_t s_evt_mutex   = NULL;
 
 static const char *response_user_name(cJSON *root)
 {
@@ -44,6 +51,18 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
             memcpy(resp_buf + resp_len, evt->data, evt->data_len);
             resp_len += evt->data_len;
             resp_buf[resp_len] = '\0';
+        }
+    }
+    return ESP_OK;
+}
+
+static esp_err_t evt_http_event_handler(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        if (s_evt_resp_len + evt->data_len < (int)sizeof(s_evt_resp_buf) - 1) {
+            memcpy(s_evt_resp_buf + s_evt_resp_len, evt->data, evt->data_len);
+            s_evt_resp_len += evt->data_len;
+            s_evt_resp_buf[s_evt_resp_len] = '\0';
         }
     }
     return ESP_OK;
@@ -132,6 +151,59 @@ static inline int do_post(const char *path, const char *body,
 static inline int do_get(const char *path)
 {
     return do_request(HTTP_METHOD_GET, path, NULL, NULL, NULL);
+}
+
+static int do_event_request(const char *path, const char *body)
+{
+    if (s_evt_mutex == NULL) {
+        s_evt_mutex = xSemaphoreCreateMutex();
+    }
+    xSemaphoreTake(s_evt_mutex, portMAX_DELAY);
+
+    s_evt_resp_len = 0;
+    memset(s_evt_resp_buf, 0, sizeof(s_evt_resp_buf));
+
+    char url[192];
+    snprintf(url, sizeof(url), "%s%s", SERVER_BASE, path);
+    ESP_LOGI(TAG, "HTTP POST %s starting (event lane)", path);
+
+    esp_http_client_config_t config = {
+        .url               = url,
+        .event_handler     = evt_http_event_handler,
+        .method            = HTTP_METHOD_POST,
+        .timeout_ms        = 10000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type",     "application/json");
+    esp_http_client_set_header(client, "X-Device-Api-Key", DEVICE_API_KEY);
+    esp_http_client_set_header(client, "X-Hub-Secret",     g_hub_secret);
+    if (strlen(g_hub_mac) > 0) {
+        esp_http_client_set_header(client, "X-Hub-Mac-Address", g_hub_mac);
+    }
+    if (body) {
+        esp_http_client_set_post_field(client, body, strlen(body));
+    }
+
+    esp_err_t err    = esp_http_client_perform(client);
+    int       status = esp_http_client_get_status_code(client);
+
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NOT_SUPPORTED && status >= 400 && status < 600) {
+            ESP_LOGW(TAG, "HTTP POST %s server error: status=%d", path, status);
+        } else {
+            ESP_LOGE(TAG, "HTTP POST %s transport failed: %s", path, esp_err_to_name(err));
+            status = -1;
+        }
+    } else {
+        ESP_LOGI(TAG, "HTTP POST %s completed: status=%d bytes=%d",
+                 path, status, s_evt_resp_len);
+    }
+
+    esp_http_client_cleanup(client);
+    xSemaphoreGive(s_evt_mutex);
+    return status;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -291,7 +363,7 @@ bool api_confirm_sensor(const char *sensor_mac)
     ESP_LOGI(TAG, "Confirming sensor %s with server", sensor_mac);
     char body[64];
     snprintf(body, sizeof(body), "{\"sensorMacAddress\":\"%s\"}", sensor_mac);
-    int status = do_post("/api/device/hubs/sensors/confirm", body, NULL, NULL);
+    int status = do_event_request("/api/device/hubs/sensors/confirm", body);
     bool ok = status == 200 || status == 201;
     if (ok) {
         ESP_LOGI(TAG, "Sensor %s confirmed on server", sensor_mac);
@@ -309,7 +381,7 @@ bool api_send_event(const char *sensor_mac, const char *event_type, const char *
     snprintf(body, sizeof(body),
              "{\"sensorMacAddress\":\"%s\",\"eventType\":\"%s\",\"severity\":\"%s\",\"payload\":%s}",
              sensor_mac, event_type, severity, payload);
-    int status = do_post("/api/device/hubs/events", body, NULL, NULL);
+    int status = do_event_request("/api/device/hubs/events", body);
     bool ok = status == 200 || status == 201 || status == 202;
     if (ok) {
         ESP_LOGI(TAG, "Event accepted by server: status=%d sensor=%s", status, sensor_mac);

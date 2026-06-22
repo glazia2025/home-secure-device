@@ -87,7 +87,7 @@ void app_main(void) {
 
     if (ENABLE_FINGERPRINT_BOOT_INIT) {
         ESP_LOGI(TAG, "fingerprint delayed init task starting");
-        if (xTaskCreate(fingerprint_init_task, "fp_init", 4096, NULL, 5, NULL) != pdPASS) {
+        if (xTaskCreatePinnedToCore(fingerprint_init_task, "fp_init", 4096, NULL, 5, NULL, 1) != pdPASS) {
             ESP_LOGW(TAG, "Failed to create fingerprint init task");
         }
     } else {

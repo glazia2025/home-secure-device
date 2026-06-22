@@ -375,7 +375,7 @@ static void start_auth_action(int action, lv_obj_t *sw, bool turn_on)
     arg->turn_on = turn_on;
     arg->action = action;
 
-    if (xTaskCreate(auth_toggle_task, "fp_auth", 6144, arg, 5, &s_auth_task) != pdPASS) {
+    if (xTaskCreatePinnedToCore(auth_toggle_task, "fp_auth", 6144, arg, 5, &s_auth_task, 1) != pdPASS) {
         free(arg);
         s_auth_task = NULL;
         display_fingerprint_status("Auth unavailable");

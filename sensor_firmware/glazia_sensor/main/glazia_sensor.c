@@ -385,11 +385,19 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
       if (strcmp(hello_nonce, s_pair_nonce) == 0) {
         ESP_LOGI(TAG, "Duplicate HELLO ignored for nonce %s while %s",
                  hello_nonce, pair_state_str(s_pair_state));
-      } else {
-        ESP_LOGW(TAG, "Unexpected HELLO nonce=%s while %s", hello_nonce,
-                 pair_state_str(s_pair_state));
+        return;
       }
-      return;
+      if (s_pair_state == PAIR_COMPLETE || s_pair_state == PAIR_WAITING_COMMIT) {
+        ESP_LOGI(TAG, "Hub reconnect: new nonce %s from known hub (was %s) — resetting pairing state",
+                 hello_nonce, pair_state_str(s_pair_state));
+        s_pair_state = PAIR_WAITING_HELLO;
+        s_hub_paired = false;
+        // Fall through to process HELLO normally
+      } else {
+        ESP_LOGW(TAG, "Unexpected HELLO nonce=%s while %s — ignoring", hello_nonce,
+                 pair_state_str(s_pair_state));
+        return;
+      }
     }
 
     ESP_LOGI(TAG, "HELLO validated from %s for sensor %s nonce=%s ch=%d",

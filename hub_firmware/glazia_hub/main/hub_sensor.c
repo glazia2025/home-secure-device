@@ -18,7 +18,7 @@
 static const char *TAG = "HUB_SENSOR";
 
 #define HUB_DHT22_GPIO              GPIO_NUM_3
-#define HUB_SENSOR_TASK_STACK       4096
+#define HUB_SENSOR_TASK_STACK       2048
 #define HUB_SENSOR_TASK_PRIORITY    4
 #define HUB_SENSOR_SAMPLE_MS        2000
 #define HUB_SENSOR_WINDOW_SIZE      3
@@ -311,12 +311,12 @@ esp_err_t hub_sensor_init(void)
 
     dht_release_line();
 
-    if (xTaskCreate(hub_sensor_task,
-                    "hub_sensor",
-                    HUB_SENSOR_TASK_STACK,
-                    NULL,
-                    HUB_SENSOR_TASK_PRIORITY,
-                    &s_task_handle) != pdPASS) {
+    if (xTaskCreatePinnedToCore(hub_sensor_task,
+                                "hub_sensor",
+                                HUB_SENSOR_TASK_STACK,
+                                NULL,
+                                HUB_SENSOR_TASK_PRIORITY,
+                                &s_task_handle, 1) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create hub sensor task");
         return ESP_FAIL;
     }

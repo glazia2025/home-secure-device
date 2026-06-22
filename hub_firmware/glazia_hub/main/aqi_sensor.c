@@ -12,7 +12,7 @@ static const char *TAG = "AQI_SENSOR";
 
 #define MQ135_ADC_UNIT          ADC_UNIT_2
 #define MQ135_ADC_CHANNEL       ADC_CHANNEL_9
-#define AQI_TASK_STACK          4096
+#define AQI_TASK_STACK          2048
 #define AQI_TASK_PRIORITY       4
 #define AQI_WARMUP_MS           10000
 #define AQI_SAMPLE_COUNT        20
@@ -118,8 +118,8 @@ esp_err_t aqi_sensor_init(void)
         return err;
     }
 
-    if (xTaskCreate(aqi_sensor_task, "aqi_sensor", AQI_TASK_STACK, NULL,
-                    AQI_TASK_PRIORITY, &s_task_handle) != pdPASS) {
+    if (xTaskCreatePinnedToCore(aqi_sensor_task, "aqi_sensor", AQI_TASK_STACK, NULL,
+                                AQI_TASK_PRIORITY, &s_task_handle, 1) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create MQ-135 task");
         adc_oneshot_del_unit(s_adc_handle);
         s_adc_handle = NULL;
