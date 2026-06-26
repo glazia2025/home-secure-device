@@ -103,6 +103,12 @@ static void event_forward_task(void *arg)
                 snprintf(payload_json, sizeof(payload_json),
                          "{\"module\":\"magnetic_reed\",\"reedState\":\"closed\","
                          "\"batteryPercent\":100,\"rssi\":%d}", (int)item.rssi);
+            } else if (strcmp(item.payload, "vibration") == 0) {
+                event_type = "shock_detected";
+                severity   = "critical";
+                snprintf(payload_json, sizeof(payload_json),
+                         "{\"module\":\"vibration\",\"shockFound\":true,"
+                         "\"batteryPercent\":100,\"rssi\":%d}", (int)item.rssi);
             } else {
                 event_type = "sensor_data";
                 severity   = "info";

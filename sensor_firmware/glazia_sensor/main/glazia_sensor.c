@@ -63,6 +63,9 @@ static const char *TAG = "SENSOR";
 #define REED_GPIO GPIO_NUM_4
 #define REED_EVENT_QUEUE_DEPTH 8
 #define REED_DEBOUNCE_MS 50
+#define VIBRATION_GPIO             GPIO_NUM_5
+#define VIBRATION_EVENT_QUEUE_DEPTH  8
+#define VIBRATION_COOLDOWN_MS      2000
 #define BLE_ADV_TIMEOUT_MS (60 * 1000)
 #define HELLO_PROV_TIMEOUT_MS (2 * 60 * 1000)
 #define NVS_MAIN_NS "glz_main"
@@ -91,6 +94,7 @@ static volatile bool s_scan_stop = false;
 static char s_pair_nonce[17] = {0};
 static TaskHandle_t s_ack_task_handle = NULL;
 static QueueHandle_t s_reed_event_queue = NULL;
+static QueueHandle_t s_vibration_event_queue = NULL;
 
 typedef enum {
   PAIR_WAITING_HELLO = 0,
@@ -531,6 +535,17 @@ static void reed_gpio_isr_handler(void *arg) {
   }
 }
 
+static void vibration_gpio_isr_handler(void *arg) {
+  uint32_t event = 1;
+  BaseType_t high_task_woken = pdFALSE;
+  if (s_vibration_event_queue) {
+    xQueueSendFromISR(s_vibration_event_queue, &event, &high_task_woken);
+  }
+  if (high_task_woken == pdTRUE) {
+    portYIELD_FROM_ISR();
+  }
+}
+
 static void send_reed_state_event(int reed_level) {
   espnow_packet_t pkt = {.type = PKT_EVENT};
   snprintf(pkt.payload, sizeof(pkt.payload), "%s",
@@ -546,6 +561,18 @@ static void send_reed_state_event(int reed_level) {
   } else {
     ESP_LOGW(TAG, "REED SEND FAILED: %s queue error: %s", pkt.payload,
              esp_err_to_name(err));
+  }
+}
+
+static void send_vibration_event(void) {
+  espnow_packet_t pkt = {.type = PKT_EVENT};
+  snprintf(pkt.payload, sizeof(pkt.payload), "vibration");
+  ESP_LOGI(TAG, "VIBRATION SEND: GPIO%d triggered", (int)VIBRATION_GPIO);
+  esp_err_t err = esp_now_send(s_hub_mac_bytes, (uint8_t *)&pkt, sizeof(pkt));
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "VIBRATION SEND OK: vibration queued to hub");
+  } else {
+    ESP_LOGW(TAG, "VIBRATION SEND FAILED: %s", esp_err_to_name(err));
   }
 }
 
@@ -583,6 +610,30 @@ static void event_task(void *arg) {
       send_reed_state_event(state);
     } else {
       ESP_LOGW(TAG, "REED CHANGE DROPPED: hub is not paired");
+    }
+  }
+}
+
+static void vibration_task(void *arg) {
+  uint32_t event;
+  ESP_LOGI(TAG, "VIBRATION TASK: waiting for ESP-NOW pairing before sending events");
+  while (!s_hub_paired) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  while (1) {
+    if (xQueueReceive(s_vibration_event_queue, &event, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+    if (!s_hub_paired) {
+      ESP_LOGW(TAG, "VIBRATION DROPPED: hub is not paired");
+      continue;
+    }
+    send_vibration_event();
+    /* Drain ISR noise during cooldown to prevent queue fill-up from a single knock */
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(VIBRATION_COOLDOWN_MS);
+    uint32_t drain;
+    while (xTaskGetTickCount() < deadline) {
+      xQueueReceive(s_vibration_event_queue, &drain, pdMS_TO_TICKS(50));
     }
   }
 }
@@ -788,6 +839,12 @@ void app_main(void) {
     abort();
   }
 
+  s_vibration_event_queue = xQueueCreate(VIBRATION_EVENT_QUEUE_DEPTH, sizeof(uint32_t));
+  if (!s_vibration_event_queue) {
+    ESP_LOGE(TAG, "Failed to create vibration event queue");
+    abort();
+  }
+
   gpio_config_t reed_io = {
       .pin_bit_mask = (1ULL << REED_GPIO),
       .mode = GPIO_MODE_INPUT,
@@ -803,6 +860,18 @@ void app_main(void) {
            (int)REED_GPIO);
   ESP_LOGI(TAG, "REED SETUP: initial GPIO%d=%d, state=%s", (int)REED_GPIO,
            reed_boot_level, reed_label_for_level(reed_boot_level));
+
+  gpio_config_t vib_io = {
+      .pin_bit_mask = (1ULL << VIBRATION_GPIO),
+      .mode         = GPIO_MODE_INPUT,
+      .pull_up_en   = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type    = GPIO_INTR_POSEDGE,
+  };
+  ESP_ERROR_CHECK(gpio_config(&vib_io));
+  ESP_ERROR_CHECK(gpio_isr_handler_add(VIBRATION_GPIO, vibration_gpio_isr_handler, NULL));
+  ESP_LOGI(TAG, "VIBRATION SETUP: GPIO%d input, POSEDGE interrupt (no pull resistor)",
+           (int)VIBRATION_GPIO);
 
   s_ble_done_sem = xSemaphoreCreateBinary();
 
@@ -862,7 +931,8 @@ void app_main(void) {
     ESP_LOGI(TAG, "Main pairing — scanning for hub HELLO...");
     xTaskCreate(channel_scan_task, "ch_scan", 2048, NULL, 4, NULL);
     xTaskCreate(event_task, "events", 3072, NULL, 5, NULL);
-    // event_task will skip sends until s_hub_paired=true (set in recv_cb)
+    xTaskCreate(vibration_task, "vib_evts", 3072, NULL, 5, NULL);
+    // event_task / vibration_task will skip sends until s_hub_paired=true (set in recv_cb)
 
   } else {
     // Provisional — must receive COMMIT within the local pairing timeout.
@@ -884,6 +954,7 @@ void app_main(void) {
       memset(prov_key_hex, 0, sizeof(prov_key_hex));
       ESP_LOGI(TAG, "Pairing confirmed — promoted to main NVS");
       xTaskCreate(event_task, "events", 3072, NULL, 5, NULL);
+      xTaskCreate(vibration_task, "vib_evts", 3072, NULL, 5, NULL);
     } else {
       // Hub never responded — roll back
       ESP_LOGE(TAG, "Pairing timeout in state %s — clearing provisional NVS and restarting",
