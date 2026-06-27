@@ -188,6 +188,21 @@ static void handle_hub_reset_command(cJSON *root)
     esp_restart();
 }
 
+static void handle_sensor_toggle_command(cJSON *root)
+{
+    cJSON *mac = cJSON_GetObjectItem(root, "sensorMacAddress");
+    cJSON *en  = cJSON_GetObjectItem(root, "enabled");
+    if (!cJSON_IsString(mac) || !mac->valuestring || !cJSON_IsBool(en)) {
+        ESP_LOGW(TAG, "sensor_toggle_command: missing fields");
+        return;
+    }
+    bool state = cJSON_IsTrue(en);
+    if (espnow_set_sensor_enabled_by_mac(mac->valuestring, state) == ESP_OK)
+        ESP_LOGI(TAG, "Sensor %s %s via server", mac->valuestring, state ? "enabled" : "disabled");
+    else
+        ESP_LOGW(TAG, "sensor_toggle_command: %s not found", mac->valuestring);
+}
+
 static void handle_ws_text(const char *data, int len)
 {
     cJSON *root = cJSON_ParseWithLength(data, len);
@@ -213,6 +228,8 @@ static void handle_ws_text(const char *data, int len)
             handle_door_lock_command(root);
         } else if (strcmp(type->valuestring, "camera_stream_command") == 0) {
             handle_camera_stream_command(root);
+        } else if (strcmp(type->valuestring, "sensor_toggle_command") == 0) {
+            handle_sensor_toggle_command(root);
         } else if (strcmp(type->valuestring, "sensor_delete_command") == 0) {
             handle_sensor_delete_command(root);
         } else if (strcmp(type->valuestring, "hub_reset_command") == 0) {

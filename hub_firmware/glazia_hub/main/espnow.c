@@ -913,6 +913,16 @@ void espnow_set_sensor_enabled(int index, bool enabled)
     display_update_sensor_count();
 }
 
+esp_err_t espnow_set_sensor_enabled_by_mac(const char *mac_str, bool enabled)
+{
+    uint8_t mac[6];
+    mac_str_to_bytes(mac_str, mac);
+    sensor_entry_t *entry = find_sensor_by_mac(mac);
+    if (!entry) return ESP_ERR_NOT_FOUND;
+    espnow_set_sensor_enabled((int)(entry - s_sensors), enabled);
+    return ESP_OK;
+}
+
 static void send_pkt_reset(const uint8_t *mac)
 {
     espnow_packet_t pkt = { .type = PKT_RESET };

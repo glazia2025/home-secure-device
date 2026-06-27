@@ -31,6 +31,7 @@ int espnow_get_sensor_count(void);
 int espnow_get_active_sensor_count(void);
 bool espnow_get_sensor_info(int index, char *out_name, size_t out_name_len, bool *out_enabled, bool *out_paired);
 void espnow_set_sensor_enabled(int index, bool enabled);
+esp_err_t espnow_set_sensor_enabled_by_mac(const char *mac_str, bool enabled);
 
 // Remove a paired sensor by MAC string: sends PKT_RESET to sensor (best-effort),
 // deletes ESP-NOW peer, and saves the updated sensor table to NVS.
