@@ -629,6 +629,7 @@ void espnow_init(void)
         return;
     }
 
+
     ESP_LOGI(TAG, "Initializing ESP-NOW stack");
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_set_pmk((const uint8_t *)GLAZIA_ESP_NOW_PMK));

@@ -80,10 +80,10 @@ void app_main(void) {
         ESP_LOGI(TAG, "Door lock GPIO inactive");
     }
 
-    ESP_LOGI(TAG, "display_init starting");
-    display_init();
+    ESP_LOGI(TAG, "display_init starting (TEMPORARILY DISABLED FOR CAMERA TEST)");
+    // display_init();
     // display_wait_ready(4000);
-    ESP_LOGI(TAG, "display_init queued/done");
+    ESP_LOGI(TAG, "display_init bypassed");
 
     ESP_LOGI(TAG, "Hub DHT22 sensor init delayed until WiFi is connected");
 

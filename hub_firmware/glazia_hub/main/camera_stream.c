@@ -28,15 +28,12 @@
 #define CAM_D6      17
 #define CAM_D7      16
 
-/* OV5640 XCLK: 16 MHz intentional — 20 MHz causes NO-EOI/frame-timeout in
- * PSRAM-DMA mode at QVGA (PCLK ~32 MHz at 16 MHz XCLK still fits DMA window). */
-#define CAM_XCLK_HZ    16000000
+/* OV5640 XCLK: 20 MHz standard. Internal DMA mode fixes NO-EOI/frame-timeout */
+#define CAM_XCLK_HZ    20000000
 
-/* fb_count=1 + GRAB_WHEN_EMPTY: halves DMA descriptor ring, eliminates
- * mid-write overwrite race that caused NO-EOI with fb_count=2+GRAB_LATEST.
- * Trade-off: sensor stalls between frames. Acceptable at ≤15fps. */
-#define CAM_FB_COUNT    1
-#define CAM_GRAB_MODE   CAMERA_GRAB_WHEN_EMPTY
+/* fb_count=2 + GRAB_LATEST is standard and works with internal DMA */
+#define CAM_FB_COUNT    2
+#define CAM_GRAB_MODE   CAMERA_GRAB_LATEST
 
 #define JPEG_QUALITY    12
 
@@ -72,9 +69,11 @@ esp_err_t camera_ensure_init(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    esp_err_t err = esp_camera_set_psram_mode(true);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "esp_camera_set_psram_mode failed: %s", esp_err_to_name(err));
+    /* Disable PSRAM DMA mode. Force internal DMA to bypass PSRAM bus contention.
+     * We have enough internal memory (19KB+) since ESP-NOW is temporarily disabled. */
+    esp_err_t psram_err = esp_camera_set_psram_mode(false);
+    if (psram_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_camera_set_psram_mode failed: %s", esp_err_to_name(psram_err));
     }
 
     camera_config_t cfg = {
@@ -97,8 +96,7 @@ esp_err_t camera_ensure_init(void)
         .xclk_freq_hz = CAM_XCLK_HZ,
         .ledc_timer   = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
-        /* YUV422 for H.264 encoder input — raw sensor data, no JPEG compression. */
-        .pixel_format = PIXFORMAT_YUV422,
+        .pixel_format = PIXFORMAT_JPEG,
         .frame_size   = FRAMESIZE_QVGA,
         .jpeg_quality = JPEG_QUALITY,
         .fb_count     = CAM_FB_COUNT,
@@ -106,7 +104,7 @@ esp_err_t camera_ensure_init(void)
         .grab_mode    = CAM_GRAB_MODE,
     };
 
-    err = esp_camera_init(&cfg);
+    esp_err_t err = esp_camera_init(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_camera_init failed: %s", esp_err_to_name(err));
         return err;
@@ -165,7 +163,8 @@ esp_err_t camera_ensure_init(void)
     }
 
     s_camera_ready = true;
-    ESP_LOGI(TAG, "Camera ready: OV5640 QVGA YUV422 xclk=%u fb=%d psram_dma=%s",
+    ESP_LOGI(TAG, "Camera ready: OV5640 QVGA JPEG q=%d xclk=%u fb=%d psram_dma=%s",
+             JPEG_QUALITY,
              (unsigned)CAM_XCLK_HZ,
              CAM_FB_COUNT,
              esp_camera_get_psram_mode() ? "enabled" : "disabled");

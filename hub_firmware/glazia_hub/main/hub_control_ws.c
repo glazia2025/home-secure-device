@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_storage.h"
+#include "mjpeg_stream.h"
 #include "state.h"
 #include "webrtc_stream.h"
 
@@ -61,6 +62,15 @@ void hub_control_ws_send_json(const char *json_str)
     if (sent < 0) {
         ESP_LOGW(TAG, "hub_control_ws_send_json failed (len=%d)", len);
     }
+}
+
+esp_err_t hub_control_ws_send_bin(const uint8_t *data, size_t len, TickType_t ticks_to_wait)
+{
+    if (!s_client || !esp_websocket_client_is_connected(s_client)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    int sent = esp_websocket_client_send_bin(s_client, (const char *)data, (int)len, ticks_to_wait);
+    return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
 
 static void send_door_lock_ack(const char *command_id,
@@ -121,12 +131,20 @@ static void handle_door_lock_command(cJSON *root)
     }
 }
 
-static void handle_viewer_ready(void)
+static void handle_viewer_ready(cJSON *root)
 {
-    ESP_LOGI(TAG, "viewer-ready → starting WebRTC");
-    // webrtc_stream_init();
-    // webrtc_stream_on_viewer_ready();
-    webrtc_trigger_start();
+    cJSON *hubId = cJSON_GetObjectItem(root, "hubId");
+    const char *id_str = (cJSON_IsString(hubId) && hubId->valuestring) ? hubId->valuestring : "unknown";
+    ESP_LOGI(TAG, "Received viewer-ready (hubId=%s) → starting MJPEG feed to control WS", id_str);
+    mjpeg_stream_start();
+}
+
+static void handle_viewer_gone(cJSON *root)
+{
+    cJSON *hubId = cJSON_GetObjectItem(root, "hubId");
+    const char *id_str = (cJSON_IsString(hubId) && hubId->valuestring) ? hubId->valuestring : "unknown";
+    ESP_LOGI(TAG, "Received viewer-gone (hubId=%s) → stopping MJPEG feed", id_str);
+    mjpeg_stream_stop();
 }
 
 static void handle_answer(cJSON *root)
@@ -234,7 +252,9 @@ static void handle_ws_text(const char *data, int len)
         } else if (strcmp(type->valuestring, "door_lock_command") == 0) {
             handle_door_lock_command(root);
         } else if (strcmp(type->valuestring, "viewer-ready") == 0) {
-            handle_viewer_ready();
+            handle_viewer_ready(root);
+        } else if (strcmp(type->valuestring, "viewer-gone") == 0) {
+            handle_viewer_gone(root);
         } else if (strcmp(type->valuestring, "answer") == 0) {
             handle_answer(root);
         } else if (strcmp(type->valuestring, "ice-candidate") == 0) {
@@ -273,6 +293,7 @@ static void websocket_event_handler(void *handler_args,
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
+        mjpeg_stream_stop();
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGW(TAG, "Hub control websocket error");
