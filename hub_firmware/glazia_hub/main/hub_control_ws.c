@@ -4,11 +4,11 @@
 #include <string.h>
 
 #include "cJSON.h"
-#include "camera_stream.h"
 #include "display.h"
 #include "door_lock.h"
 #include "esp_log.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "espnow.h"
@@ -16,11 +16,20 @@
 #include "freertos/task.h"
 #include "nvs_storage.h"
 #include "state.h"
+#include "webrtc_stream.h"
 
 static const char *TAG = "HUB_WS";
 
 static esp_websocket_client_handle_t s_client;
 static bool s_started;
+
+static void log_tls_heap(const char *context)
+{
+    ESP_LOGI(TAG, "%s: internal_free=%u internal_largest=%u",
+             context,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
 
 static const char *message_user_name(cJSON *root)
 {
@@ -41,34 +50,16 @@ static const char *message_user_name(cJSON *root)
     return cJSON_IsString(name) && name->valuestring ? name->valuestring : NULL;
 }
 
-void hub_control_ws_send_camera_status(const char *stream_session_id,
-                                       const char *status,
-                                       const char *error)
+void hub_control_ws_send_json(const char *json_str)
 {
     if (!s_client || !esp_websocket_client_is_connected(s_client)) {
-        ESP_LOGW(TAG, "Cannot send camera status; websocket is not connected");
+        ESP_LOGW(TAG, "Cannot send JSON; websocket not connected");
         return;
     }
-
-    char message[256];
-    if (error && error[0]) {
-        snprintf(message, sizeof(message),
-                 "{\"type\":\"camera_stream_status\",\"streamSessionId\":\"%s\",\"status\":\"%s\",\"error\":\"%s\"}",
-                 stream_session_id ? stream_session_id : "",
-                 status ? status : "unknown",
-                 error);
-    } else {
-        snprintf(message, sizeof(message),
-                 "{\"type\":\"camera_stream_status\",\"streamSessionId\":\"%s\",\"status\":\"%s\"}",
-                 stream_session_id ? stream_session_id : "",
-                 status ? status : "unknown");
-    }
-
-    int sent = esp_websocket_client_send_text(s_client, message, strlen(message), pdMS_TO_TICKS(1000));
+    int len = (int)strlen(json_str);
+    int sent = esp_websocket_client_send_text(s_client, json_str, len, pdMS_TO_TICKS(3000));
     if (sent < 0) {
-        ESP_LOGW(TAG, "Failed to send camera status=%s stream=%.8s",
-                 status ? status : "unknown",
-                 stream_session_id ? stream_session_id : "");
+        ESP_LOGW(TAG, "hub_control_ws_send_json failed (len=%d)", len);
     }
 }
 
@@ -130,30 +121,45 @@ static void handle_door_lock_command(cJSON *root)
     }
 }
 
-static void handle_camera_stream_command(cJSON *root)
+static void handle_viewer_ready(void)
 {
-    cJSON *action = cJSON_GetObjectItem(root, "action");
-    if (!cJSON_IsString(action) || !action->valuestring) {
-        ESP_LOGW(TAG, "Camera stream command missing action");
+    ESP_LOGI(TAG, "viewer-ready → starting WebRTC");
+    // webrtc_stream_init();
+    // webrtc_stream_on_viewer_ready();
+    webrtc_trigger_start();
+}
+
+static void handle_answer(cJSON *root)
+{
+    /* { "type":"answer", "sdp":{"type":"answer","sdp":"<raw_sdp>"}, "hubId":"..." } */
+    cJSON *sdp_obj = cJSON_GetObjectItem(root, "sdp");
+    if (!cJSON_IsObject(sdp_obj)) {
+        ESP_LOGW(TAG, "answer: missing sdp object");
         return;
     }
-
-    ESP_LOGI(TAG, "Camera stream command action=%s", action->valuestring);
-
-    if (strcmp(action->valuestring, "start") == 0) {
-        cJSON *stream_session_id = cJSON_GetObjectItem(root, "streamSessionId");
-        const char *session = cJSON_IsString(stream_session_id) && stream_session_id->valuestring
-                                  ? stream_session_id->valuestring
-                                  : "";
-        esp_err_t err = camera_stream_start(session);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Camera stream start failed: %s", esp_err_to_name(err));
-        }
-    } else if (strcmp(action->valuestring, "stop") == 0) {
-        camera_stream_stop();
-    } else {
-        ESP_LOGW(TAG, "Unsupported camera stream action: %s", action->valuestring);
+    cJSON *sdp_str = cJSON_GetObjectItem(sdp_obj, "sdp");
+    if (!cJSON_IsString(sdp_str) || !sdp_str->valuestring) {
+        ESP_LOGW(TAG, "answer: missing sdp.sdp string");
+        return;
     }
+    webrtc_stream_on_answer(sdp_str->valuestring, (int)strlen(sdp_str->valuestring));
+}
+
+static void handle_ice_candidate(cJSON *root)
+{
+    /* { "type":"ice-candidate", "candidate":{"candidate":"<raw>","sdpMid":"0",...} } */
+    cJSON *cand_obj = cJSON_GetObjectItem(root, "candidate");
+    if (!cJSON_IsObject(cand_obj)) {
+        ESP_LOGW(TAG, "ice-candidate: missing candidate object");
+        return;
+    }
+    cJSON *cand_str = cJSON_GetObjectItem(cand_obj, "candidate");
+    if (!cJSON_IsString(cand_str) || !cand_str->valuestring) {
+        ESP_LOGW(TAG, "ice-candidate: missing candidate string");
+        return;
+    }
+    ESP_LOGI(TAG, "Forwarding ICE candidate to peer: %.80s", cand_str->valuestring);
+    webrtc_stream_on_ice_candidate(cand_str->valuestring, (int)strlen(cand_str->valuestring));
 }
 
 static void handle_sensor_delete_command(cJSON *root)
@@ -215,6 +221,7 @@ static void handle_ws_text(const char *data, int len)
     if (cJSON_IsString(type) && type->valuestring) {
         if (strcmp(type->valuestring, "ready") == 0) {
             ESP_LOGI(TAG, "Control websocket ready");
+            log_tls_heap("WSS ready");
             const char *name = message_user_name(root);
             if (name && name[0] != '\0' && strcmp(name, g_user_name) != 0) {
                 strncpy(g_user_name, name, sizeof(g_user_name) - 1);
@@ -226,8 +233,12 @@ static void handle_ws_text(const char *data, int len)
             espnow_queue_hub_event("hub_online");
         } else if (strcmp(type->valuestring, "door_lock_command") == 0) {
             handle_door_lock_command(root);
-        } else if (strcmp(type->valuestring, "camera_stream_command") == 0) {
-            handle_camera_stream_command(root);
+        } else if (strcmp(type->valuestring, "viewer-ready") == 0) {
+            handle_viewer_ready();
+        } else if (strcmp(type->valuestring, "answer") == 0) {
+            handle_answer(root);
+        } else if (strcmp(type->valuestring, "ice-candidate") == 0) {
+            handle_ice_candidate(root);
         } else if (strcmp(type->valuestring, "sensor_toggle_command") == 0) {
             handle_sensor_toggle_command(root);
         } else if (strcmp(type->valuestring, "sensor_delete_command") == 0) {
@@ -258,6 +269,7 @@ static void websocket_event_handler(void *handler_args,
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "Connected to hub control websocket");
+        log_tls_heap("WSS connected");
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
@@ -296,13 +308,15 @@ esp_err_t hub_control_ws_start(void)
              "X-Hub-Secret: %s\r\n",
              DEVICE_API_KEY, g_hub_mac, g_hub_secret);
 
+    log_tls_heap("Before WSS start");
+
     esp_websocket_client_config_t config = {
         .uri               = uri,
         .headers           = headers,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_name         = "hub_ws",
-        .task_stack = 6144,
-        .buffer_size = 1024,
+        .task_stack = 4096,
+        .buffer_size = 4096,  /* SDP strings are usually 2-4 KB; keep WSS memory below event TLS pressure. */
         .network_timeout_ms = 20000,
         .reconnect_timeout_ms = 5000,
         .ping_interval_sec = 20,
@@ -323,6 +337,8 @@ esp_err_t hub_control_ws_start(void)
         s_client = NULL;
         return err;
     }
+
+    webrtc_stream_controller_init(); // Add this line before client start
 
     err = esp_websocket_client_start(s_client);
     if (err != ESP_OK) {

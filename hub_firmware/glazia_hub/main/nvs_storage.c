@@ -26,6 +26,8 @@ void nvs_save_credentials(void)
     nvs_set_str(h, "hub_secret", g_hub_secret);
     nvs_set_str(h, "home_name",  g_home_name);
     nvs_set_str(h, "user_name",  g_user_name);
+    if (g_turn_user[0]) nvs_set_str(h, "turn_user", g_turn_user);
+    if (g_turn_psw[0])  nvs_set_str(h, "turn_psw",  g_turn_psw);
 
     nvs_commit(h);
     nvs_close(h);
@@ -55,6 +57,9 @@ bool nvs_load_credentials(void)
     LOAD("hub_mac",    g_hub_mac,      sizeof(g_hub_mac),      false)
     LOAD("home_name",  g_home_name,    sizeof(g_home_name),    false)
     LOAD("user_name",  g_user_name,    sizeof(g_user_name),    false)
+    /* TURN creds optional — if absent, globals keep compile-time defaults from state.h */
+    LOAD("turn_user",  g_turn_user,    sizeof(g_turn_user),    false)
+    LOAD("turn_psw",   g_turn_psw,     sizeof(g_turn_psw),     false)
 
     #undef LOAD
 

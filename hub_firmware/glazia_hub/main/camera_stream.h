@@ -1,6 +1,12 @@
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
-esp_err_t camera_stream_start(const char *stream_session_id);
-void camera_stream_stop(void);
+/* Idempotent — safe to call when camera is already running. */
+esp_err_t camera_ensure_init(void);
+
+/* No-op if camera is not initialized. */
+void camera_deinit(void);
+
+bool camera_is_initialized(void);

@@ -23,6 +23,8 @@ char g_wifi_ssid[64] = {0}, g_wifi_password[64] = {0}, g_provisioning_token[64] 
 char g_hub_mac[18] = {0}, g_hub_secret[128] = {0}, g_home_id[64] = {0}, g_home_name[64] = {0}, g_user_name[64] = {0};
 char g_pending_sensor_mac[18] = {0};
 char g_pending_provision_key[33] = {0};
+char g_turn_user[64] = TURN_DEFAULT_USER;
+char g_turn_psw[64]  = TURN_DEFAULT_PSW;
 
 static void fingerprint_init_task(void *arg)
 {

@@ -29,6 +29,10 @@ extern char g_user_name[64];
 extern char g_pending_sensor_mac[18];    // e.g. "AA:BB:CC:DD:EE:FF"
 extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
 
+// TURN credentials — loaded from NVS; fall back to compile-time defaults below
+extern char g_turn_user[64];
+extern char g_turn_psw[64];
+
 // ── Firmware Version ──────────────────────────────────────────────────────
 #define HUB_FIRMWARE_VERSION "1.0.0"
 
@@ -38,6 +42,10 @@ extern char g_pending_provision_key[33]; // 32-char hex of 16-byte LMK
 #define SERVER_BASE    "https://home-secure.glazia.in"
 #define DEVICE_API_KEY "replace-this-too"
 #define BLE_DEVICE_NAME "GlaziaHub"
+
+// ── TURN server credentials (dev defaults — rotate before production) ─────
+#define TURN_DEFAULT_USER "xio"
+#define TURN_DEFAULT_PSW  "xio@1234"
 
 // ── ESP-NOW Security ──────────────────────────────────────────────────────
 // PMK: 16-byte Primary Master Key — must match on hub and all sensors.

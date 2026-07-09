@@ -7,8 +7,8 @@ idf_component_register(
         "ble.c"
         "wifi.c"
         "api_client.c"
-        "camera_media_ws.c"
         "camera_stream.c"
+        "webrtc_stream.c"
         "door_lock.c"
         "espnow.c"
         "display.c"
@@ -38,4 +38,6 @@ idf_component_register(
         esp_lcd_touch_xpt2046
         esp_timer
         esp_adc
+        esp_peer
+        esp_h264
 )

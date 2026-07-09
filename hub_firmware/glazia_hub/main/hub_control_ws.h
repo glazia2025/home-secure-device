@@ -4,6 +4,7 @@
 
 esp_err_t hub_control_ws_start(void);
 void hub_control_ws_stop(void);
-void hub_control_ws_send_camera_status(const char *stream_session_id,
-                                       const char *status,
-                                       const char *error);
+
+/* Send an arbitrary JSON string over the hub control WebSocket.
+ * Used by webrtc_stream to relay SDP offer and ICE candidates. */
+void hub_control_ws_send_json(const char *json_str);

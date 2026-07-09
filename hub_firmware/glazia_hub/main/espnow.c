@@ -57,6 +57,7 @@ static QueueHandle_t s_commit_queue = NULL;
 static TaskHandle_t  s_event_task_handle = NULL;
 static TaskHandle_t  s_commit_task_handle = NULL;
 static bool          s_espnow_ready = false;
+static void        (*s_reconnect_done_cb)(void) = NULL;
 
 static void log_internal_heap(const char *context)
 {
@@ -518,7 +519,7 @@ static void start_hello_retry(sensor_entry_t *entry, int max_retries, bool is_re
     arg->entry        = entry;
     arg->max_retries  = max_retries;
     arg->is_reconnect = is_reconnect;
-    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 3072, arg, 5, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 2048, arg, 5, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create HELLO retry task");
         free(arg);
     }
@@ -569,9 +570,16 @@ static void reconnect_manager_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
-    display_sensor_list();
-    display_update_sensor_count();
+    /* display_sensor_list / display_update_sensor_count intentionally omitted:
+     * commit_retry_worker_task already calls them for each ACK'd sensor, and
+     * those calls run on a larger stack. Calling LVGL here at 3072 bytes is safe
+     * but redundant and was the source of the stack overflow at 2048. */
     ESP_LOGI(TAG, "Reconnect manager task done");
+    if (s_reconnect_done_cb) {
+        void (*cb)(void) = s_reconnect_done_cb;
+        s_reconnect_done_cb = NULL;
+        cb();
+    }
     vTaskDelete(NULL);
 }
 
@@ -590,7 +598,7 @@ void espnow_init(void)
         log_internal_heap("event queue create failed");
         return;
     }
-    if (xTaskCreatePinnedToCore(event_forward_task, "evt_fwd", 6144, NULL, 4, &s_event_task_handle, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(event_forward_task, "evt_fwd", 8192, NULL, 4, &s_event_task_handle, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create event forward task");
         log_internal_heap("event forward task create failed");
         vQueueDelete(s_event_queue);
@@ -746,8 +754,9 @@ void espnow_get_sensor_list_str(char *out, size_t out_len)
     }
 }
 
-void espnow_reconnect_saved_sensors(void)
+void espnow_reconnect_saved_sensors(void (*on_done)(void))
 {
+    s_reconnect_done_cb = on_done;
     char    (*macs)[18] = malloc(MAX_SENSORS * sizeof(*macs));
     uint8_t (*keys)[16] = malloc(MAX_SENSORS * sizeof(*keys));
     char    (*names)[32] = malloc(MAX_SENSORS * sizeof(*names));
@@ -765,6 +774,7 @@ void espnow_reconnect_saved_sensors(void)
         free(keys);
         free(names);
         free(zones);
+        if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
         return;
     }
 
@@ -815,7 +825,10 @@ void espnow_reconnect_saved_sensors(void)
     // Push initial sensor list to display (all OFF until ACK received)
     display_sensor_list();
 
-    if (s_sensor_count == 0) return;
+    if (s_sensor_count == 0) {
+        if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
+        return;
+    }
 
     // Spawn a single reconnect manager instead of one hello_retry task per sensor.
     // All sensors get HELLO every 200 ms from one task (3072 B) rather than
@@ -826,6 +839,7 @@ void espnow_reconnect_saved_sensors(void)
         for (int i = 0; i < s_sensor_count; i++) {
             start_hello_retry(&s_sensors[i], 150, true);
         }
+        if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
         return;
     }
     mgr_arg->count = s_sensor_count;
@@ -839,6 +853,7 @@ void espnow_reconnect_saved_sensors(void)
         for (int i = 0; i < s_sensor_count; i++) {
             start_hello_retry(&s_sensors[i], 150, true);
         }
+        if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
     }
 }
 

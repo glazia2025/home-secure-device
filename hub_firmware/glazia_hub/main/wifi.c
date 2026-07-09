@@ -1,13 +1,13 @@
 #include "wifi.h"
 #include "state.h"
 #include "api_client.h"
-#include "camera_stream.h"
 #include "display.h"
 #include "hub_control_ws.h"
 #include "hub_sensor.h"
 #include "aqi_sensor.h"
 #include "espnow.h"
 #include "nvs_storage.h"
+#include "webrtc_stream.h"
 #include "fingerprint.h"
 
 #include "esp_wifi.h"
@@ -20,6 +20,8 @@
 #include <string.h>
 
 static const char *TAG = "WIFI";
+
+static void start_hub_ws(void) { hub_control_ws_start(); }
 
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
@@ -192,14 +194,6 @@ void wifi_connect(const char *ssid, const char *password)
     }
     ESP_LOGI(TAG, "WiFi step done: esp_wifi_start");
 
-    ESP_LOGI(TAG, "WiFi step: esp_wifi_set_max_tx_power");
-    err = esp_wifi_set_max_tx_power(56);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "esp_wifi_set_max_tx_power failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "WiFi step done: esp_wifi_set_max_tx_power");
-    }
-
     err = esp_wifi_set_ps(WIFI_PS_NONE);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "esp_wifi_set_ps(NONE) failed: %s", esp_err_to_name(err));
@@ -238,8 +232,7 @@ void wifi_connect(const char *ssid, const char *password)
             display_hub_location(g_home_name);
             ESP_LOGI(TAG, "Already registered. Mode transition: OPERATIONAL, home='%s'", g_home_name);
             fp_start_enroll_if_needed();
-            hub_control_ws_start();
-            espnow_reconnect_saved_sensors();
+            espnow_reconnect_saved_sensors(start_hub_ws);
 
             // Also check if a sensor pairing was interrupted (provisional NVS)
             char prov_mac[18] = {0}, prov_key[33] = {0}, prov_name[32] = {0}, prov_zone[32] = {0};
@@ -267,7 +260,7 @@ void wifi_enter_offline_mode(void)
     s_offline_mode = true;
     espnow_deinit();
     hub_control_ws_stop();
-    camera_stream_stop();
+    webrtc_stream_stop();
 
     esp_err_t err = esp_wifi_disconnect();
     if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {
@@ -313,12 +306,11 @@ bool wifi_resume_from_offline_mode(void)
 
     esp_wifi_set_ps(WIFI_PS_NONE);
     espnow_init();
-    espnow_reconnect_saved_sensors();
+    espnow_reconnect_saved_sensors(start_hub_ws);
     g_mode = MODE_OPERATIONAL;
     ESP_LOGI(TAG, "Mode transition: OPERATIONAL after WiFi resume");
     display_user_name(g_user_name);
     display_show_dashboard(true);
     display_hub_location(g_home_name);
-    hub_control_ws_start();
     return true;
 }

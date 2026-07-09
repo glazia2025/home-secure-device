@@ -19,8 +19,9 @@ void espnow_pair_sensor(const char *sensor_mac_str, const char *provision_key_he
                         const char *name, const char *zone);
 
 // On reboot: load saved sensor MACs + LMK keys from NVS and re-add each as an
-// encrypted ESP-NOW peer. Does NOT send HELLO (sensors reconnect on their own).
-void espnow_reconnect_saved_sensors(void);
+// encrypted ESP-NOW peer, then send HELLO until ACK.  Calls on_done() (if non-NULL)
+// when the reconnect manager task exits (or immediately if no sensors).
+void espnow_reconnect_saved_sensors(void (*on_done)(void));
 
 // Fill `out` with a semicolon-separated sensor list for the display:
 //   "S1|Unknown|ON;S2|Unknown|OFF;..."

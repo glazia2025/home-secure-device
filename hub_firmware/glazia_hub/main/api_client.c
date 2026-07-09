@@ -6,6 +6,7 @@
 #include "fingerprint.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -24,6 +25,14 @@ static SemaphoreHandle_t s_api_mutex   = NULL;
 static char              s_evt_resp_buf[256];
 static int               s_evt_resp_len = 0;
 static SemaphoreHandle_t s_evt_mutex   = NULL;
+
+static void log_tls_heap(const char *context)
+{
+    ESP_LOGI(TAG, "%s: internal_free=%u internal_largest=%u",
+             context,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
@@ -147,6 +156,7 @@ static int do_event_request(const char *path, const char *body)
     char url[192];
     snprintf(url, sizeof(url), "%s%s", SERVER_BASE, path);
     ESP_LOGI(TAG, "HTTP POST %s starting (event lane)", path);
+    log_tls_heap("Before event HTTPS POST");
 
     esp_http_client_config_t config = {
         .url               = url,
@@ -183,6 +193,7 @@ static int do_event_request(const char *path, const char *body)
     }
 
     esp_http_client_cleanup(client);
+    log_tls_heap("After event HTTPS cleanup");
     xSemaphoreGive(s_evt_mutex);
     return status;
 }
