@@ -6,6 +6,8 @@
 #include "door_lock.h"
 #include "fingerprint.h"
 #include "hub_sensor.h"
+#include "espnow.h"
+#include "cam_spi.h"
 #include "state.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -64,6 +66,9 @@ void app_main(void) {
     snprintf(g_hub_mac, sizeof(g_hub_mac), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "HUB MAC: %s", g_hub_mac);
 
+    ESP_LOGI(TAG, "cam_spi_init starting");
+    cam_spi_init();
+
     ESP_LOGI(TAG, "wifi_platform_init starting");
     esp_err_t wifi_platform_err = wifi_platform_init();
     if (wifi_platform_err != ESP_OK) {
@@ -80,10 +85,10 @@ void app_main(void) {
         ESP_LOGI(TAG, "Door lock GPIO inactive");
     }
 
-    ESP_LOGI(TAG, "display_init starting (TEMPORARILY DISABLED FOR CAMERA TEST)");
-    // display_init();
+    ESP_LOGI(TAG, "display_init starting");
+    display_init();
     // display_wait_ready(4000);
-    ESP_LOGI(TAG, "display_init bypassed");
+    ESP_LOGI(TAG, "display_init queued/done");
 
     ESP_LOGI(TAG, "Hub DHT22 sensor init delayed until WiFi is connected");
 

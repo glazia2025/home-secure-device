@@ -221,8 +221,8 @@ void wifi_connect(const char *ssid, const char *password)
             ESP_LOGW(TAG, "AQI sensor delayed init failed: %s", esp_err_to_name(aqi_sensor_err));
         }
 
-        ESP_LOGI(TAG, "TEMPORARY EXPERIMENT: ESP-NOW init disabled to test camera feed");
-        // espnow_init();
+        ESP_LOGI(TAG, "Initializing ESP-NOW after WiFi connect");
+        espnow_init();
 
         if (strlen(g_hub_secret) > 0) {
             // Already registered — go operational and restore saved sensors
@@ -232,9 +232,7 @@ void wifi_connect(const char *ssid, const char *password)
             display_hub_location(g_home_name);
             ESP_LOGI(TAG, "Already registered. Mode transition: OPERATIONAL, home='%s'", g_home_name);
             fp_start_enroll_if_needed();
-            ESP_LOGI(TAG, "TEMPORARY EXPERIMENT: ESP-NOW reconnect disabled, starting WS directly");
-            // espnow_reconnect_saved_sensors(start_hub_ws);
-            start_hub_ws();
+            espnow_reconnect_saved_sensors(start_hub_ws);
 
             // Also check if a sensor pairing was interrupted (provisional NVS)
             char prov_mac[18] = {0}, prov_key[33] = {0}, prov_name[32] = {0}, prov_zone[32] = {0};
@@ -307,9 +305,8 @@ bool wifi_resume_from_offline_mode(void)
     }
 
     esp_wifi_set_ps(WIFI_PS_NONE);
-    // espnow_init();
-    // espnow_reconnect_saved_sensors(start_hub_ws);
-    start_hub_ws();
+    espnow_init();
+    espnow_reconnect_saved_sensors(start_hub_ws);
     g_mode = MODE_OPERATIONAL;
     ESP_LOGI(TAG, "Mode transition: OPERATIONAL after WiFi resume");
     display_user_name(g_user_name);

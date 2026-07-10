@@ -7,7 +7,6 @@ idf_component_register(
         "ble.c"
         "wifi.c"
         "api_client.c"
-        "camera_stream.c"
         "webrtc_stream.c"
         "door_lock.c"
         "espnow.c"
@@ -15,7 +14,7 @@ idf_component_register(
         "hub_sensor.c"
         "aqi_sensor.c"
         "hub_control_ws.c"
-        "mjpeg_stream.c"
+        "cam_spi.c"
         "fingerprint.c"
         "nvs_storage.c"
         ${UI_SRCS}
@@ -27,7 +26,6 @@ idf_component_register(
         esp_netif
         bt
         json
-        esp32-camera
         esp_http_client
         esp_websocket_client
         driver

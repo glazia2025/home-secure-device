@@ -519,7 +519,7 @@ static void start_hello_retry(sensor_entry_t *entry, int max_retries, bool is_re
     arg->entry        = entry;
     arg->max_retries  = max_retries;
     arg->is_reconnect = is_reconnect;
-    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 2048, arg, 5, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 3072, arg, 5, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create HELLO retry task");
         free(arg);
     }
@@ -546,9 +546,9 @@ static void reconnect_manager_task(void *arg)
     uint8_t primary; wifi_second_chan_t second;
     esp_wifi_get_channel(&primary, &second);
 
-    ESP_LOGI(TAG, "Reconnect manager: %d sensor(s), channel=%d, max 150 rounds", count, primary);
+    ESP_LOGI(TAG, "Reconnect manager: %d sensor(s), channel=%d, max 20 rounds", count, primary);
 
-    for (int round = 0; round < 150; round++) {
+    for (int round = 0; round < 20; round++) {
         bool all_paired = true;
         for (int i = 0; i < count; i++) {
             sensor_entry_t *entry = &s_sensors[indices[i]];
@@ -838,7 +838,7 @@ void espnow_reconnect_saved_sensors(void (*on_done)(void))
     if (!mgr_arg) {
         ESP_LOGE(TAG, "OOM for reconnect manager — falling back to per-sensor tasks");
         for (int i = 0; i < s_sensor_count; i++) {
-            start_hello_retry(&s_sensors[i], 150, true);
+            start_hello_retry(&s_sensors[i], 20, true);
         }
         if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
         return;
@@ -852,7 +852,7 @@ void espnow_reconnect_saved_sensors(void (*on_done)(void))
         ESP_LOGE(TAG, "Failed to create reconnect manager task — falling back to per-sensor tasks");
         free(mgr_arg);
         for (int i = 0; i < s_sensor_count; i++) {
-            start_hello_retry(&s_sensors[i], 150, true);
+            start_hello_retry(&s_sensors[i], 20, true);
         }
         if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
     }
@@ -921,7 +921,7 @@ void espnow_set_sensor_enabled(int index, bool enabled)
         entry->is_reconnect = true;
         entry->notify_on_ack = false;
         entry->nonce[0] = '\0';
-        start_hello_retry(entry, 150, true);
+        start_hello_retry(entry, 20, true);
         ESP_LOGI(TAG, "Sensor S%d re-enabled, reconnect started", index + 1);
     }
 

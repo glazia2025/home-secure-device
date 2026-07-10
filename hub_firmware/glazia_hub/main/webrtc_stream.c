@@ -9,9 +9,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
-#include "camera_stream.h"
 #include "hub_control_ws.h"
 #include "state.h"
+
+// Stubs for camera hardware since the physical camera moved to the cam_esp
+static inline esp_err_t camera_ensure_init(void) { ESP_LOGW("WEBRTC", "Camera physically moved! WebRTC video impossible."); return ESP_FAIL; }
+static inline void camera_deinit(void) {}
 
 #include "esp_h264_enc_single_sw.h"
 #include "esp_camera.h"

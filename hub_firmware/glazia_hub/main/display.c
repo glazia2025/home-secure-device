@@ -56,7 +56,7 @@ static const char *TAG = "DISPLAY";
 #define LCD_PIXEL_CLK_HZ   (10 * 1000 * 1000)
 #define LCD_CMD_BITS       8
 #define LCD_PARAM_BITS     8
-#define DRAW_BUF_LINES     4
+#define DRAW_BUF_LINES     40
 
 /* ── Display-side theme aliases ─────────────────────────────────────────── */
 #define C_CYAN_U32   UI_COLOR_VIOLET
@@ -505,7 +505,6 @@ static esp_err_t lcd_hw_init(void)
         ESP_LOGE(TAG, "Display init: LVGL port init failed: %s", esp_err_to_name(err));
         return err;
     }
-
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io,
         .panel_handle  = panel,
