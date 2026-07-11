@@ -380,7 +380,7 @@ bool api_send_hub_event(const char *event_type)
     return ok;
 }
 
-bool api_send_event(const char *sensor_mac, const char *event_type, const char *severity, const char *payload_json)
+int api_send_event(const char *sensor_mac, const char *event_type, const char *severity, const char *payload_json)
 {
     ESP_LOGI(TAG, "Sending event: %s from %s", event_type, sensor_mac);
     char body[384];
@@ -395,5 +395,5 @@ bool api_send_event(const char *sensor_mac, const char *event_type, const char *
     } else {
         ESP_LOGW(TAG, "Event send failed: status=%d sensor=%s", status, sensor_mac);
     }
-    return ok;
+    return status;
 }

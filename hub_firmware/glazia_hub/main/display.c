@@ -46,6 +46,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <ctype.h>
+#include "esp_task_wdt.h"
 
 static const char *TAG = "DISPLAY";
 
@@ -56,7 +57,7 @@ static const char *TAG = "DISPLAY";
 #define LCD_PIXEL_CLK_HZ   (10 * 1000 * 1000)
 #define LCD_CMD_BITS       8
 #define LCD_PARAM_BITS     8
-#define DRAW_BUF_LINES     40
+#define DRAW_BUF_LINES     30
 
 /* ── Display-side theme aliases ─────────────────────────────────────────── */
 #define C_CYAN_U32   UI_COLOR_VIOLET
@@ -408,6 +409,11 @@ static void critical_toggle_cb(lv_event_t *e)
     start_auth_action(AUTH_ACTION_HUB_TOGGLE, sw, is_on);
 }
 
+static void lvgl_flush_wait_cb(lv_disp_drv_t *drv) {
+    (void)drv;
+    vTaskDelay(1);
+}
+
 static esp_err_t lcd_hw_init(void)
 {
     ESP_LOGI(TAG, "Display init: SPI bus starting, free internal heap=%u",
@@ -505,6 +511,9 @@ static esp_err_t lcd_hw_init(void)
         ESP_LOGE(TAG, "Display init: LVGL port init failed: %s", esp_err_to_name(err));
         return err;
     }
+    /* LVGL task owns CPU 1 — remove IDLE1 from WDT so transient rendering stalls
+     * don't trigger a panic. Restores behaviour documented in LOG.md §2026-07-10. */
+    // esp_task_wdt_delete(xTaskGetIdleTaskHandleForCore(1));
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io,
         .panel_handle  = panel,
@@ -519,6 +528,9 @@ static esp_err_t lcd_hw_init(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
+    if (s_lvgl_disp) {
+        s_lvgl_disp->driver->wait_cb = lvgl_flush_wait_cb;
+    }
     if (!s_lvgl_disp) {
         ESP_LOGE(TAG, "Display init: lvgl_port_add_disp returned NULL, internal_free=%u internal_largest=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

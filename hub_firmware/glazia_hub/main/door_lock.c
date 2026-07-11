@@ -233,7 +233,7 @@ esp_err_t door_lock_start(door_lock_ack_sender_t ack_sender)
     }
 
     if (!s_task) {
-        if (xTaskCreatePinnedToCore(door_lock_task, "door_lock", 2048, NULL, 6, &s_task, 0) != pdPASS) {
+        if (xTaskCreatePinnedToCore(door_lock_task, "door_lock", 8192, NULL, 6, &s_task, 0) != pdPASS) {
             ESP_LOGE(TAG, "Failed to create door lock task");
             return ESP_ERR_NO_MEM;
         }

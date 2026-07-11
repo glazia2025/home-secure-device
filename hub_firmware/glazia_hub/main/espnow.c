@@ -117,9 +117,24 @@ static void event_forward_task(void *arg)
                          "{\"raw\":\"%.110s\"}", item.payload);
             }
 
-            bool ok = api_send_event(item.mac_str, event_type, severity, payload_json);
+            int status = api_send_event(item.mac_str, event_type, severity, payload_json);
+            bool ok = (status == 200 || status == 201 || status == 202);
+            bool retriable = (status == 0 || status >= 500);
             if (ok) {
                 ESP_LOGI(TAG, "Event forward result for %s: accepted", item.mac_str);
+            } else if (status == 409) {
+                ESP_LOGW(TAG, "Server returned 409 (unconfirmed). Attempting to re-confirm %s", item.mac_str);
+                api_confirm_sensor(item.mac_str);
+                if (item.retry_count < 3) {
+                    item.retry_count++;
+                    if (!s_event_queue || xQueueSendToFront(s_event_queue, &item, 0) != pdTRUE) {
+                        ESP_LOGW(TAG, "Event retry queue full for %s — dropping", item.mac_str);
+                    } else {
+                        ESP_LOGI(TAG, "Event re-queued (retry %d/3) for %s", item.retry_count, item.mac_str);
+                    }
+                }
+            } else if (!retriable) {
+                ESP_LOGW(TAG, "Event dropped (status=%d, not retriable) for %s", status, item.mac_str);
             } else if (item.retry_count < 3) {
                 item.retry_count++;
                 vTaskDelay(pdMS_TO_TICKS(3000));

@@ -22,8 +22,9 @@ static const char *TAG = "CAM_SPI";
 #define CAM_SPI_CLK_HZ  (8 * 1000 * 1000)
 
 /* ── Transfer sizes ────────────────────────────────────────────────────────── */
-#define SPI_CMD_SIZE    32          /* hub→cam command transaction (cam IDLE state) */
-#define SPI_TRANS_SIZE  5120        /* must match SPI_TRANS_SIZE in spi_bridge.c */
+#define SPI_CMD_SIZE       32       /* hub→cam command transaction (cam IDLE state) */
+#define SPI_TRANS_SIZE     5120     /* must match SPI_TRANS_SIZE in spi_bridge.c */
+#define FRAME_INTERVAL_MS  100      /* max 10fps — prevents control WS TCP saturation */
 
 /* ── Command encoding (first 4 MOSI bytes) ────────────────────────────────── */
 static const uint8_t CMD_START[4]    = {0xCA, 0x01, 0x00, 0x00};
@@ -64,7 +65,8 @@ static void frame_proxy_task(void *arg)
 
     ESP_LOGI(TAG, "Frame proxy task started");
 
-    TickType_t last_drdy_tick = xTaskGetTickCount();
+    TickType_t last_drdy_tick  = xTaskGetTickCount();
+    TickType_t last_frame_tick = 0;
 
     while (s_proxy_running) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
@@ -77,8 +79,13 @@ static void frame_proxy_task(void *arg)
         }
 
         if (!gpio_get_level(CAM_SPI_DRDY)) {
-            /* Watchdog: coprocessor returned to IDLE after 3× hub timeout — re-trigger */
-            if ((xTaskGetTickCount() - last_drdy_tick) > pdMS_TO_TICKS(5000)) {
+            if (s_stop_requested && (xTaskGetTickCount() - last_drdy_tick) > pdMS_TO_TICKS(2000)) {
+                ESP_LOGW(TAG, "DRDY timeout after stop — forcing proxy exit");
+                s_proxy_running  = false;
+                s_stop_requested = false;
+                break;
+            }
+            if (!s_stop_requested && (xTaskGetTickCount() - last_drdy_tick) > pdMS_TO_TICKS(5000)) {
                 ESP_LOGW(TAG, "No DRDY for 5 s — re-sending START to coprocessor");
                 cam_spi_send_start();
                 last_drdy_tick = xTaskGetTickCount();
@@ -144,6 +151,21 @@ static void frame_proxy_task(void *arg)
         } else {
             ESP_LOGW(TAG, "Frame WS send failed: %s", esp_err_to_name(ws_err));
         }
+
+        /* Rate limit: enforce minimum inter-frame interval to prevent TCP send
+         * buffer saturation on the control WS. At 22fps the ~5 KB frames fill
+         * the lwIP 5760 B send buffer in ~51ms; 100ms/frame keeps throughput at
+         * ~49 KB/s so the buffer drains between sends. Skip when stopping so the
+         * proxy exits promptly rather than waiting out the interval. */
+        if (!s_stop_requested) {
+            TickType_t now     = xTaskGetTickCount();
+            TickType_t elapsed = now - last_frame_tick;
+            TickType_t target  = pdMS_TO_TICKS(FRAME_INTERVAL_MS);
+            if (last_frame_tick != 0 && elapsed < target) {
+                vTaskDelay(target - elapsed);
+            }
+        }
+        last_frame_tick = xTaskGetTickCount();
     }
 
     ESP_LOGI(TAG, "Frame proxy task stopped");
@@ -267,9 +289,8 @@ void cam_spi_proxy_start(void)
 void cam_spi_proxy_stop(void)
 {
     s_stop_requested = true;
-    s_proxy_running  = false;
     if (s_proxy_task) {
         xTaskNotifyGive(s_proxy_task);   /* wake from ulTaskNotifyTake immediately */
     }
-    ESP_LOGI(TAG, "Frame proxy stopped");
+    ESP_LOGI(TAG, "STOP requested — will embed CMD_STOP on next frame transaction");
 }

@@ -37,6 +37,14 @@ static void log_token_summary(const char *label, const char *token)
 }
 
 // ── NEW: Transition Task ──────────────────────────────────────────────────
+static void wifi_connect_task(void *arg)
+{
+    g_mode = MODE_WIFI_CONNECTING;
+    ESP_LOGI(TAG, "Mode transition: WIFI_CONNECTING");
+    wifi_connect(g_wifi_ssid, g_wifi_password);
+    vTaskDelete(NULL);
+}
+
 static void transition_to_wifi_task(void *arg)
 {
     ESP_LOGI(TAG, "Credential handoff task started; stopping BLE before WiFi");
@@ -46,9 +54,11 @@ static void transition_to_wifi_task(void *arg)
     // Safely stop BLE from outside the NimBLE thread
     ble_stop();
 
-    g_mode = MODE_WIFI_CONNECTING;
-    ESP_LOGI(TAG, "Mode transition: WIFI_CONNECTING");
-    wifi_connect(g_wifi_ssid, g_wifi_password);
+    // Now that NimBLE is stopped, ~20KB of heap is freed. We can now allocate
+    // a task with a large enough stack (8192) for the mbedTLS HTTPS POST.
+    if (xTaskCreate(wifi_connect_task, "wifi_conn", 8192, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create wifi_conn task");
+    }
 
     // Delete this temporary task once we hand off to WiFi
     vTaskDelete(NULL);
@@ -61,12 +71,13 @@ static void check_and_proceed(void)
         ESP_LOGI(TAG, "All BLE credentials received for SSID '%s'; starting WiFi transition",
                  g_wifi_ssid);
 
-        // Reset the token flag so this doesn't accidentally trigger twice
-        got_token = false;
-
         // Spawn the transition task to avoid deadlocking the NimBLE thread
-        if (xTaskCreate(transition_to_wifi_task, "wifi_trans", 12288, NULL, 5, NULL) != pdPASS) {
+        if (xTaskCreate(transition_to_wifi_task, "wifi_trans", 4096, NULL, 5, NULL) != pdPASS) {
             ESP_LOGE(TAG, "Failed to create WiFi transition task");
+        } else {
+            // Clear flag only after successful task creation; if creation fails, flags
+            // stay set so the disconnect handler doesn't restart advertising
+            got_token = false;
         }
     }
 }

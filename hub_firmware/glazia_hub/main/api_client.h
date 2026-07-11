@@ -18,9 +18,10 @@ bool api_fetch_sensor_pairing(char *out_sensor_mac, char *out_provision_key_hex,
 // Called after ESP-NOW pairing is confirmed — tells server sensor is live
 bool api_confirm_sensor(const char *sensor_mac);
 
-// Called when sensor sends an event — forwards to server
-bool api_send_event(const char *sensor_mac, const char *event_type,
-                    const char *severity, const char *payload_json);
+// Called when sensor sends an event — forwards to server.
+// Returns HTTP status code (200/201/202 = accepted), or 0 on network error.
+int api_send_event(const char *sensor_mac, const char *event_type,
+                   const char *severity, const char *payload_json);
 
 // Hub-level event with no sensorMacAddress — e.g. "hub_online"
 bool api_send_hub_event(const char *event_type);

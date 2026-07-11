@@ -141,24 +141,34 @@ static void spi_listener_task(void *arg)
 
             gpio_set_level(CAM_SPI_DRDY, 1);   /* signal hub: frame ready */
 
-            spi_slave_transaction_t *result = NULL;
-            esp_err_t res_err = spi_slave_get_trans_result(CAM_SPI_HOST, &result,
-                                                            pdMS_TO_TICKS(1000));
+            bool trans_done = false;
+            while (!trans_done && sending) {
+                spi_slave_transaction_t *result = NULL;
+                esp_err_t res_err = spi_slave_get_trans_result(CAM_SPI_HOST, &result,
+                                                                pdMS_TO_TICKS(1000));
+                if (res_err == ESP_ERR_TIMEOUT) {
+                    no_resp_count++;
+                    ESP_LOGW(TAG, "No hub response (%d/3) — hub gone?", no_resp_count);
+                    if (no_resp_count >= 3) {
+                        ESP_LOGW(TAG, "Hub unresponsive — stopping camera");
+                        slave_deinit();
+                        ESP_ERROR_CHECK(slave_init());
+                        sending = false;
+                        break;
+                    }
+                    /* keep waiting for the same queued transaction to complete */
+                } else if (res_err == ESP_OK) {
+                    trans_done = true;
+                    no_resp_count = 0;
+                } else {
+                    ESP_LOGE(TAG, "SPI trans error: %s", esp_err_to_name(res_err));
+                    sending = false;
+                    break;
+                }
+            }
             gpio_set_level(CAM_SPI_DRDY, 0);
 
-            if (res_err == ESP_ERR_TIMEOUT) {
-                no_resp_count++;
-                ESP_LOGW(TAG, "No hub response (%d/3) — hub gone?", no_resp_count);
-                if (no_resp_count >= 3) {
-                    ESP_LOGW(TAG, "Hub unresponsive — stopping camera");
-                    /* Re-init slave to drain the pending DMA transaction */
-                    slave_deinit();
-                    ESP_ERROR_CHECK(slave_init());
-                    sending = false;
-                }
-                continue;
-            }
-            no_resp_count = 0;
+            if (!sending) continue;
 
             ESP_LOGD(TAG, "DRDY LOW — hub clocked frame out (frame_len=%" PRIu32 ")", flen);
 
