@@ -66,6 +66,7 @@ static const char *TAG = "FINGERPRINT";
 #define FP_VERIFY_WINDOW_MS 10000
 #define FP_RETRY_DELAY_MS 2500
 #define FP_VERIFY_ATTEMPTS 3
+#define FP_ENROLL_ATTEMPTS 5
 #define FP_ENROLL_SECOND_CAPTURE_DELAY_MS 1500
 #define FP_SUCCESS_RESULT_HOLD_MS 900
 
@@ -368,15 +369,18 @@ static bool r307_capture_to_buffer_until(uint8_t buffer_id, TickType_t start, Ti
     return false;
 }
 
-static esp_err_t fp_enroll_once(uint16_t slot)
+static esp_err_t fp_enroll_once(uint16_t slot, int attempt)
 {
     const TickType_t start = xTaskGetTickCount();
     const TickType_t scan_start = start + pdMS_TO_TICKS(FP_SCAN_START_DELAY_MS);
     const TickType_t deadline = start + pdMS_TO_TICKS(FP_ENROLL_WINDOW_MS);
     esp_err_t result = ESP_FAIL;
 
-    ESP_LOGI(TAG, "Enrollment target slot: %u", slot);
-    display_fingerprint_phase("Registering your fingerprint", "Place your finger on the sensor");
+    char attempt_prompt[48];
+    snprintf(attempt_prompt, sizeof(attempt_prompt),
+             "Attempt %d/%d — place your finger", attempt, FP_ENROLL_ATTEMPTS);
+    ESP_LOGI(TAG, "Enrollment target slot: %u (attempt %d/%d)", slot, attempt, FP_ENROLL_ATTEMPTS);
+    display_fingerprint_phase("Registering your fingerprint", attempt_prompt);
     delay_until_tick_with_progress(start, deadline, scan_start);
     display_fingerprint_phase("Registering your fingerprint", "Processing...");
 
@@ -421,7 +425,7 @@ done:
     if (result == ESP_OK) {
         display_fingerprint_phase("Registering your fingerprint", "Registration completed");
     } else {
-        display_fingerprint_phase("Registering your fingerprint", "Denied");
+        display_fingerprint_phase("Registering your fingerprint", "Try again");
     }
     return result;
 }
@@ -453,20 +457,23 @@ esp_err_t fp_enroll(void)
         }
     }
 
-    while (count < FP_MAX_PRINTS) {
-        esp_err_t err = fp_enroll_once(slot);
-        if (err == ESP_OK) {
-            slots[count++] = slot;
-            nvs_save_fingerprints(count, slots);
-            char id[8];
-            snprintf(id, sizeof(id), "id_%02u", count);
-            nvs_save_fingerprint(true, id, slot);
-            return ESP_OK;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(FP_RETRY_DELAY_MS));
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 1; attempt <= FP_ENROLL_ATTEMPTS; attempt++) {
+        err = fp_enroll_once(slot, attempt);
+        if (err == ESP_OK) break;
+        if (attempt < FP_ENROLL_ATTEMPTS) vTaskDelay(pdMS_TO_TICKS(FP_RETRY_DELAY_MS));
     }
 
+    if (err == ESP_OK) {
+        slots[count++] = slot;
+        nvs_save_fingerprints(count, slots);
+        char id[8];
+        snprintf(id, sizeof(id), "id_%02u", count);
+        nvs_save_fingerprint(true, id, slot);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "Fingerprint enrollment failed after %d attempts", FP_ENROLL_ATTEMPTS);
     return ESP_FAIL;
 }
 
