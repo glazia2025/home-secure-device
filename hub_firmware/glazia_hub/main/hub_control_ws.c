@@ -313,7 +313,7 @@ esp_err_t hub_control_ws_start(void)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_name         = "hub_ws",
         .task_stack = 8192,   /* mbedTLS stack frames can use 3-5 KB; 4096 was too tight */
-        .buffer_size = 4096,
+        .buffer_size = 8192,
         .network_timeout_ms = 20000,
         .reconnect_timeout_ms = 2000,  /* faster reconnect after server-side disconnect */
         .ping_interval_sec = 120,      /* server drops WS at ~80s; ping at 120s avoids hitting a dead socket */

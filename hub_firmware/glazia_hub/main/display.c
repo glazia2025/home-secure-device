@@ -57,7 +57,7 @@ static const char *TAG = "DISPLAY";
 #define LCD_PIXEL_CLK_HZ   (10 * 1000 * 1000)
 #define LCD_CMD_BITS       8
 #define LCD_PARAM_BITS     8
-#define DRAW_BUF_LINES     30
+#define DRAW_BUF_LINES     15
 
 /* ── Display-side theme aliases ─────────────────────────────────────────── */
 #define C_CYAN_U32   UI_COLOR_VIOLET
@@ -522,7 +522,7 @@ static esp_err_t lcd_hw_init(void)
         .hres          = LCD_H_RES,
         .vres          = LCD_V_RES,
         .monochrome    = false,
-        .flags         = { .buff_dma = true },
+        .flags         = { .buff_dma = true, .buff_spiram = false },
     };
     ESP_LOGI(TAG, "Display init: adding LVGL display, internal_free=%u internal_largest=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

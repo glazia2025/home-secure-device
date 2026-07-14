@@ -12,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include <string.h>
 #include <stdio.h>
@@ -613,7 +614,7 @@ void espnow_init(void)
         log_internal_heap("event queue create failed");
         return;
     }
-    if (xTaskCreatePinnedToCore(event_forward_task, "evt_fwd", 8192, NULL, 4, &s_event_task_handle, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(event_forward_task, "evt_fwd", 8192, NULL, 4, &s_event_task_handle, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create event forward task");
         log_internal_heap("event forward task create failed");
         vQueueDelete(s_event_queue);
@@ -631,8 +632,8 @@ void espnow_init(void)
         s_event_queue = NULL;
         return;
     }
-    if (xTaskCreatePinnedToCore(commit_retry_worker_task, "commit_retry", COMMIT_WORKER_STACK,
-                                NULL, 5, &s_commit_task_handle, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(commit_retry_worker_task, "commit_retry", COMMIT_WORKER_STACK,
+                                NULL, 5, &s_commit_task_handle, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create COMMIT retry worker task");
         log_internal_heap("COMMIT worker task create failed");
         vQueueDelete(s_commit_queue);
@@ -862,8 +863,8 @@ void espnow_reconnect_saved_sensors(void (*on_done)(void))
     for (int i = 0; i < s_sensor_count; i++) {
         mgr_arg->indices[i] = i;
     }
-    if (xTaskCreatePinnedToCore(reconnect_manager_task, "reconnect_mgr", 3072,
-                                mgr_arg, 5, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(reconnect_manager_task, "reconnect_mgr", 3072,
+                                mgr_arg, 5, NULL, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create reconnect manager task — falling back to per-sensor tasks");
         free(mgr_arg);
         for (int i = 0; i < s_sensor_count; i++) {
