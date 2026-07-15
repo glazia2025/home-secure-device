@@ -124,9 +124,13 @@ static void handle_door_lock_command(cJSON *root)
 static void handle_viewer_ready(void)
 {
     ESP_LOGI(TAG, "viewer-ready → starting WebRTC");
-    // webrtc_stream_init();
-    // webrtc_stream_on_viewer_ready();
     webrtc_trigger_start();
+}
+
+static void handle_viewer_gone(void)
+{
+    ESP_LOGI(TAG, "viewer-gone → stopping WebRTC");
+    webrtc_trigger_stop();
 }
 
 static void handle_answer(cJSON *root)
@@ -235,6 +239,8 @@ static void handle_ws_text(const char *data, int len)
             handle_door_lock_command(root);
         } else if (strcmp(type->valuestring, "viewer-ready") == 0) {
             handle_viewer_ready();
+        } else if (strcmp(type->valuestring, "viewer-gone") == 0) {
+            handle_viewer_gone();
         } else if (strcmp(type->valuestring, "answer") == 0) {
             handle_answer(root);
         } else if (strcmp(type->valuestring, "ice-candidate") == 0) {
@@ -273,6 +279,7 @@ static void websocket_event_handler(void *handler_args,
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
+        webrtc_trigger_stop();
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGW(TAG, "Hub control websocket error");
@@ -338,7 +345,7 @@ esp_err_t hub_control_ws_start(void)
         return err;
     }
 
-    webrtc_stream_controller_init(); // Add this line before client start
+    webrtc_stream_controller_init();
 
     err = esp_websocket_client_start(s_client);
     if (err != ESP_OK) {

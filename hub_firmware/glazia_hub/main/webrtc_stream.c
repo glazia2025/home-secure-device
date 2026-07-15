@@ -81,7 +81,7 @@ static void rtc_ctrl_task(void *arg) {
                 ESP_LOGI(TAG, "Controller: Trigger received, starting viewer connection...");
                 webrtc_stream_on_viewer_ready();
             } else if (cmd == WEBRTC_CMD_STOP) {
-                ESP_LOGW(TAG, "Controller: Answer timeout (30s) — stopping session so reconnect works");
+                ESP_LOGI(TAG, "Controller: Stop requested");
                 webrtc_stream_stop();
             }
         }
@@ -118,7 +118,14 @@ void webrtc_stream_controller_init(void) {
 }
 
 void webrtc_trigger_start(void) {
+    if (!s_webrtc_queue) return;
     uint8_t cmd = WEBRTC_CMD_START;
+    xQueueSend(s_webrtc_queue, &cmd, 0);
+}
+
+void webrtc_trigger_stop(void) {
+    if (!s_webrtc_queue) return;
+    uint8_t cmd = WEBRTC_CMD_STOP;
     xQueueSend(s_webrtc_queue, &cmd, 0);
 }
 
@@ -425,6 +432,7 @@ void webrtc_stream_on_viewer_ready(void)
     int ret = esp_peer_open(&cfg, esp_peer_get_default_impl(), &s_peer);
     if (ret != 0 || !s_peer) {
         ESP_LOGE(TAG, "esp_peer_open failed: %d", ret);
+        s_connecting = false;
         return;
     }
 
