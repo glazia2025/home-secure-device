@@ -16,9 +16,9 @@ static const char *TAG = "SPI_BRIDGE";
 #define CAM_SPI_HOST    SPI2_HOST
 #define CAM_SPI_SCLK    14
 #define CAM_SPI_MOSI    1       /* receives data from hub */
-#define CAM_SPI_MISO    2       /* sends data to hub; avoids GPIO46 strapping/pulldown */
+#define CAM_SPI_MISO    46      /* sends data to hub; fixed board wiring */
 #define CAM_SPI_CS      21
-#define CAM_SPI_DRDY    47      /* output: HIGH = queued data; avoid GPIO0 boot strap */
+#define CAM_SPI_DRDY    0       /* output: HIGH = queued data; fixed board wiring */
 
 /* ── Outbound message (cam→hub), queued by webrtc_cam ─────────────────────── */
 typedef struct {
