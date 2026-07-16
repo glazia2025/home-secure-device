@@ -84,6 +84,28 @@ typedef struct {
   char payload[128];
 } __attribute__((packed)) espnow_packet_t;
 
+/* ── Offline event cache (RTC — survives deep sleep) ────────────────────────
+ */
+#define MAX_CACHED_EVENTS  10
+#define CACHED_PAYLOAD_LEN 32
+#define EVENT_CACHE_MAGIC  0xCAFEBABEUL
+
+typedef struct {
+  char payload[CACHED_PAYLOAD_LEN];
+} cached_event_t;
+
+RTC_DATA_ATTR static uint32_t       s_cache_magic;
+RTC_DATA_ATTR static cached_event_t s_event_cache[MAX_CACHED_EVENTS];
+RTC_DATA_ATTR static uint8_t        s_cache_head;
+RTC_DATA_ATTR static uint8_t        s_cache_tail;
+RTC_DATA_ATTR static uint8_t        s_cache_count;
+
+static char              s_last_event_payload[CACHED_PAYLOAD_LEN];
+static bool              s_flushing_cache = false;
+static volatile bool     s_flush_on_connect = false;
+static SemaphoreHandle_t s_send_done_sem = NULL;
+static esp_now_send_status_t s_last_send_status;
+
 /* ── Sensor state ───────────────────────────────────────────────────────────
  */
 static char s_own_mac_str[18] = {0};
@@ -290,6 +312,8 @@ static void wifi_init_for_espnow(void) {
 
 /* ── ESP-NOW ────────────────────────────────────────────────────────────────
  */
+static void cache_event(const char *payload);  // defined in cache helpers below
+
 static void espnow_send_cb(const esp_now_send_info_t *tx_info,
                            esp_now_send_status_t status) {
   const uint8_t *dest = tx_info ? tx_info->des_addr : NULL;
@@ -299,10 +323,22 @@ static void espnow_send_cb(const esp_now_send_info_t *tx_info,
     mac_bytes_to_str(dest, mac_str);
     ESP_LOGI(TAG, "Pairing send callback to %s: %s", mac_str,
              status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
-    return;
+    return;  // pairing ACK — don't signal event semaphore
   }
 
-  ESP_LOGD(TAG, "Send %s", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+  // Event send result
+  s_last_send_status = status;
+  if (status == ESP_NOW_SEND_FAIL && s_hub_paired &&
+      !s_flushing_cache && s_last_event_payload[0] != '\0') {
+    cache_event(s_last_event_payload);
+    ESP_LOGW(TAG, "ESP-NOW FAIL — cached '%s' (%d in cache)",
+             s_last_event_payload, s_cache_count);
+  }
+  s_last_event_payload[0] = '\0';
+
+  BaseType_t higher_task_woken = pdFALSE;
+  xSemaphoreGiveFromISR(s_send_done_sem, &higher_task_woken);
+  if (higher_task_woken) portYIELD_FROM_ISR();
 }
 
 static void ack_send_task(void *arg) {
@@ -333,6 +369,11 @@ static void ack_send_task(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(50));
 
     for (int attempt = 1; attempt <= 4; attempt++) {
+      if (s_pair_state != PAIR_WAITING_COMMIT) {
+        ESP_LOGI(TAG, "ACK burst stopped early (pre-send), pairing state=%s",
+                 pair_state_str(s_pair_state));
+        break;
+      }
       esp_err_t err =
           esp_now_send(s_hub_mac_bytes, (uint8_t *)&ack, sizeof(ack));
       if (err == ESP_OK) {
@@ -341,13 +382,6 @@ static void ack_send_task(void *arg) {
         ESP_LOGW(TAG, "ACK attempt %d/4 failed to queue: %s", attempt,
                  esp_err_to_name(err));
       }
-
-      if (s_pair_state != PAIR_WAITING_COMMIT) {
-        ESP_LOGI(TAG, "ACK burst stopped early, pairing state=%s",
-                 pair_state_str(s_pair_state));
-        break;
-      }
-
       vTaskDelay(pdMS_TO_TICKS(120));
     }
   }
@@ -454,6 +488,10 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
     s_pair_state = PAIR_COMPLETE;
     s_hub_paired = true;
     s_scan_stop = true;
+    if (s_cache_count > 0) {
+      ESP_LOGI(TAG, "Hub connected — %d cached event(s) will be flushed", s_cache_count);
+      s_flush_on_connect = true;
+    }
   } else if (pkt->type == PKT_RESET) {
     if (memcmp(info->src_addr, s_hub_mac_bytes, 6) != 0) {
       char src_mac[18] = {0};
@@ -512,6 +550,53 @@ static void channel_scan_task(void *arg) {
   vTaskDelete(NULL);
 }
 
+/* ── Offline event cache helpers ────────────────────────────────────────────
+ */
+static void cache_event(const char *payload) {
+  strncpy(s_event_cache[s_cache_head].payload, payload, CACHED_PAYLOAD_LEN - 1);
+  s_event_cache[s_cache_head].payload[CACHED_PAYLOAD_LEN - 1] = '\0';
+  s_cache_head = (s_cache_head + 1) % MAX_CACHED_EVENTS;
+  if (s_cache_count < MAX_CACHED_EVENTS) {
+    s_cache_count++;
+  } else {
+    s_cache_tail = (s_cache_tail + 1) % MAX_CACHED_EVENTS;
+  }
+  // s_flush_on_connect is NOT set here — only set in PKT_COMMIT handler when
+  // hub is known to be back online. Setting it here would cause event_task to
+  // wake every 500ms and attempt flushes that all fail while hub is still offline.
+}
+
+static void flush_event_cache(void) {
+  if (s_cache_count == 0) return;
+  ESP_LOGI(TAG, "Flushing %d cached event(s) to hub", s_cache_count);
+  s_flushing_cache = true;
+  while (s_cache_count > 0) {
+    cached_event_t *evt = &s_event_cache[s_cache_tail];
+    espnow_packet_t pkt = {.type = PKT_EVENT};
+    strncpy(pkt.payload, evt->payload, sizeof(pkt.payload) - 1);
+    pkt.payload[sizeof(pkt.payload) - 1] = '\0';
+
+    ESP_LOGI(TAG, "Replaying cached event: '%s' (%d remaining)", evt->payload, s_cache_count);
+    xSemaphoreTake(s_send_done_sem, 0);  // drain any stale give
+
+    esp_err_t err = esp_now_send(s_hub_mac_bytes, (uint8_t *)&pkt, sizeof(pkt));
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "Cache flush send error: %s — stopping", esp_err_to_name(err));
+      break;
+    }
+    if (xSemaphoreTake(s_send_done_sem, pdMS_TO_TICKS(300)) == pdTRUE &&
+        s_last_send_status == ESP_NOW_SEND_SUCCESS) {
+      s_cache_tail = (s_cache_tail + 1) % MAX_CACHED_EVENTS;
+      s_cache_count--;
+      vTaskDelay(pdMS_TO_TICKS(50));  // small gap between replays
+    } else {
+      ESP_LOGW(TAG, "Cache flush: hub offline again, stopping (%d remaining)", s_cache_count);
+      break;
+    }
+  }
+  s_flushing_cache = false;
+}
+
 /* ── Event task ─────────────────────────────────────────────────────────────
  */
 static const char *reed_payload_for_level(int level) {
@@ -555,12 +640,26 @@ static void send_reed_state_event(int reed_level) {
            (int)REED_GPIO, reed_level, reed_label_for_level(reed_level),
            pkt.payload);
 
+  xSemaphoreTake(s_send_done_sem, 0);  // drain any stale give from prior sends
+  strncpy(s_last_event_payload, pkt.payload, CACHED_PAYLOAD_LEN - 1);
+  s_last_event_payload[CACHED_PAYLOAD_LEN - 1] = '\0';
+
   esp_err_t err = esp_now_send(s_hub_mac_bytes, (uint8_t *)&pkt, sizeof(pkt));
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "REED SEND OK: %s queued to hub", pkt.payload);
-  } else {
+  if (err != ESP_OK) {
+    s_last_event_payload[0] = '\0';
     ESP_LOGW(TAG, "REED SEND FAILED: %s queue error: %s", pkt.payload,
              esp_err_to_name(err));
+    return;
+  }
+  ESP_LOGI(TAG, "REED SEND OK: %s queued to hub", pkt.payload);
+
+  if (xSemaphoreTake(s_send_done_sem, pdMS_TO_TICKS(300)) != pdTRUE) {
+    // Callback swallowed by MAC layer — cache now, clear payload to prevent double-cache
+    s_last_event_payload[0] = '\0';
+    ESP_LOGW(TAG, "REED callback timeout — caching %s", pkt.payload);
+    cache_event(pkt.payload);
+  } else if (s_last_send_status == ESP_NOW_SEND_SUCCESS && s_cache_count > 0) {
+    flush_event_cache();
   }
 }
 
@@ -568,11 +667,25 @@ static void send_vibration_event(void) {
   espnow_packet_t pkt = {.type = PKT_EVENT};
   snprintf(pkt.payload, sizeof(pkt.payload), "vibration");
   ESP_LOGI(TAG, "VIBRATION SEND: GPIO%d triggered", (int)VIBRATION_GPIO);
+
+  xSemaphoreTake(s_send_done_sem, 0);  // drain any stale give from prior sends
+  strncpy(s_last_event_payload, pkt.payload, CACHED_PAYLOAD_LEN - 1);
+  s_last_event_payload[CACHED_PAYLOAD_LEN - 1] = '\0';
+
   esp_err_t err = esp_now_send(s_hub_mac_bytes, (uint8_t *)&pkt, sizeof(pkt));
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "VIBRATION SEND OK: vibration queued to hub");
-  } else {
+  if (err != ESP_OK) {
+    s_last_event_payload[0] = '\0';
     ESP_LOGW(TAG, "VIBRATION SEND FAILED: %s", esp_err_to_name(err));
+    return;
+  }
+  ESP_LOGI(TAG, "VIBRATION SEND OK: vibration queued to hub");
+
+  if (xSemaphoreTake(s_send_done_sem, pdMS_TO_TICKS(300)) != pdTRUE) {
+    s_last_event_payload[0] = '\0';
+    ESP_LOGW(TAG, "VIBRATION callback timeout — caching");
+    cache_event(pkt.payload);
+  } else if (s_last_send_status == ESP_NOW_SEND_SUCCESS && s_cache_count > 0) {
+    flush_event_cache();
   }
 }
 
@@ -591,7 +704,11 @@ static void event_task(void *arg) {
   send_reed_state_event(last_state);
 
   while (1) {
-    if (xQueueReceive(s_reed_event_queue, &event, portMAX_DELAY) != pdTRUE) {
+    if (xQueueReceive(s_reed_event_queue, &event, pdMS_TO_TICKS(500)) != pdTRUE) {
+      if (s_flush_on_connect && s_hub_paired) {
+        s_flush_on_connect = false;
+        flush_event_cache();
+      }
       continue;
     }
 
@@ -609,7 +726,10 @@ static void event_task(void *arg) {
     if (s_hub_paired) {
       send_reed_state_event(state);
     } else {
-      ESP_LOGW(TAG, "REED CHANGE DROPPED: hub is not paired");
+      const char *payload = reed_payload_for_level(state);
+      cache_event(payload);
+      ESP_LOGW(TAG, "REED CHANGE (hub offline) — cached '%s' (%d in cache)",
+               payload, s_cache_count);
     }
   }
 }
@@ -625,10 +745,11 @@ static void vibration_task(void *arg) {
       continue;
     }
     if (!s_hub_paired) {
-      ESP_LOGW(TAG, "VIBRATION DROPPED: hub is not paired");
-      continue;
+      cache_event("vibration");
+      ESP_LOGW(TAG, "VIBRATION (hub offline) — cached (%d in cache)", s_cache_count);
+    } else {
+      send_vibration_event();
     }
-    send_vibration_event();
     /* Drain ISR noise during cooldown to prevent queue fill-up from a single knock */
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(VIBRATION_COOLDOWN_MS);
     uint32_t drain;
@@ -843,6 +964,24 @@ void app_main(void) {
   if (!s_vibration_event_queue) {
     ESP_LOGE(TAG, "Failed to create vibration event queue");
     abort();
+  }
+
+  // Semaphore for making event sends pseudo-synchronous
+  s_send_done_sem = xSemaphoreCreateBinary();
+  if (!s_send_done_sem) {
+    ESP_LOGE(TAG, "Failed to create send_done semaphore");
+    abort();
+  }
+
+  // Validate RTC ring buffer on first power-on
+  if (s_cache_magic != EVENT_CACHE_MAGIC) {
+    s_cache_magic = EVENT_CACHE_MAGIC;
+    s_cache_head  = 0;
+    s_cache_tail  = 0;
+    s_cache_count = 0;
+    ESP_LOGI(TAG, "Event cache initialized (first boot)");
+  } else {
+    ESP_LOGI(TAG, "Event cache restored: %d event(s) in cache", s_cache_count);
   }
 
   gpio_config_t reed_io = {

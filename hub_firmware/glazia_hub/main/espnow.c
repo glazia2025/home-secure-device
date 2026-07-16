@@ -12,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include <string.h>
 #include <stdio.h>
@@ -117,9 +118,24 @@ static void event_forward_task(void *arg)
                          "{\"raw\":\"%.110s\"}", item.payload);
             }
 
-            bool ok = api_send_event(item.mac_str, event_type, severity, payload_json);
+            int status = api_send_event(item.mac_str, event_type, severity, payload_json);
+            bool ok = (status == 200 || status == 201 || status == 202);
+            bool retriable = (status == 0 || status >= 500);
             if (ok) {
                 ESP_LOGI(TAG, "Event forward result for %s: accepted", item.mac_str);
+            } else if (status == 409) {
+                ESP_LOGW(TAG, "Server returned 409 (unconfirmed). Attempting to re-confirm %s", item.mac_str);
+                api_confirm_sensor(item.mac_str);
+                if (item.retry_count < 3) {
+                    item.retry_count++;
+                    if (!s_event_queue || xQueueSendToFront(s_event_queue, &item, 0) != pdTRUE) {
+                        ESP_LOGW(TAG, "Event retry queue full for %s — dropping", item.mac_str);
+                    } else {
+                        ESP_LOGI(TAG, "Event re-queued (retry %d/3) for %s", item.retry_count, item.mac_str);
+                    }
+                }
+            } else if (!retriable) {
+                ESP_LOGW(TAG, "Event dropped (status=%d, not retriable) for %s", status, item.mac_str);
             } else if (item.retry_count < 3) {
                 item.retry_count++;
                 vTaskDelay(pdMS_TO_TICKS(3000));
@@ -519,7 +535,7 @@ static void start_hello_retry(sensor_entry_t *entry, int max_retries, bool is_re
     arg->entry        = entry;
     arg->max_retries  = max_retries;
     arg->is_reconnect = is_reconnect;
-    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 2048, arg, 5, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(hello_retry_task, "hello_retry", 3072, arg, 5, NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create HELLO retry task");
         free(arg);
     }
@@ -546,9 +562,9 @@ static void reconnect_manager_task(void *arg)
     uint8_t primary; wifi_second_chan_t second;
     esp_wifi_get_channel(&primary, &second);
 
-    ESP_LOGI(TAG, "Reconnect manager: %d sensor(s), channel=%d, max 150 rounds", count, primary);
+    ESP_LOGI(TAG, "Reconnect manager: %d sensor(s), channel=%d, max 20 rounds", count, primary);
 
-    for (int round = 0; round < 150; round++) {
+    for (int round = 0; round < 20; round++) {
         bool all_paired = true;
         for (int i = 0; i < count; i++) {
             sensor_entry_t *entry = &s_sensors[indices[i]];
@@ -598,7 +614,7 @@ void espnow_init(void)
         log_internal_heap("event queue create failed");
         return;
     }
-    if (xTaskCreatePinnedToCore(event_forward_task, "evt_fwd", 8192, NULL, 4, &s_event_task_handle, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(event_forward_task, "evt_fwd", 8192, NULL, 4, &s_event_task_handle, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create event forward task");
         log_internal_heap("event forward task create failed");
         vQueueDelete(s_event_queue);
@@ -616,8 +632,8 @@ void espnow_init(void)
         s_event_queue = NULL;
         return;
     }
-    if (xTaskCreatePinnedToCore(commit_retry_worker_task, "commit_retry", COMMIT_WORKER_STACK,
-                                NULL, 5, &s_commit_task_handle, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(commit_retry_worker_task, "commit_retry", COMMIT_WORKER_STACK,
+                                NULL, 5, &s_commit_task_handle, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create COMMIT retry worker task");
         log_internal_heap("COMMIT worker task create failed");
         vQueueDelete(s_commit_queue);
@@ -628,6 +644,7 @@ void espnow_init(void)
         s_event_queue = NULL;
         return;
     }
+
 
     ESP_LOGI(TAG, "Initializing ESP-NOW stack");
     ESP_ERROR_CHECK(esp_now_init());
@@ -837,7 +854,7 @@ void espnow_reconnect_saved_sensors(void (*on_done)(void))
     if (!mgr_arg) {
         ESP_LOGE(TAG, "OOM for reconnect manager — falling back to per-sensor tasks");
         for (int i = 0; i < s_sensor_count; i++) {
-            start_hello_retry(&s_sensors[i], 150, true);
+            start_hello_retry(&s_sensors[i], 20, true);
         }
         if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
         return;
@@ -846,12 +863,12 @@ void espnow_reconnect_saved_sensors(void (*on_done)(void))
     for (int i = 0; i < s_sensor_count; i++) {
         mgr_arg->indices[i] = i;
     }
-    if (xTaskCreatePinnedToCore(reconnect_manager_task, "reconnect_mgr", 3072,
-                                mgr_arg, 5, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(reconnect_manager_task, "reconnect_mgr", 3072,
+                                mgr_arg, 5, NULL, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create reconnect manager task — falling back to per-sensor tasks");
         free(mgr_arg);
         for (int i = 0; i < s_sensor_count; i++) {
-            start_hello_retry(&s_sensors[i], 150, true);
+            start_hello_retry(&s_sensors[i], 20, true);
         }
         if (s_reconnect_done_cb) { s_reconnect_done_cb(); s_reconnect_done_cb = NULL; }
     }
@@ -920,7 +937,7 @@ void espnow_set_sensor_enabled(int index, bool enabled)
         entry->is_reconnect = true;
         entry->notify_on_ack = false;
         entry->nonce[0] = '\0';
-        start_hello_retry(entry, 150, true);
+        start_hello_retry(entry, 20, true);
         ESP_LOGI(TAG, "Sensor S%d re-enabled, reconnect started", index + 1);
     }
 

@@ -6,11 +6,14 @@
 #include "door_lock.h"
 #include "fingerprint.h"
 #include "hub_sensor.h"
+#include "espnow.h"
+#include "cam_spi.h"
 #include "state.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 
 static const char *TAG = "MAIN";
 
@@ -63,6 +66,9 @@ void app_main(void) {
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(g_hub_mac, sizeof(g_hub_mac), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "HUB MAC: %s", g_hub_mac);
+
+    ESP_LOGI(TAG, "cam_spi_init starting");
+    cam_spi_init();
 
     ESP_LOGI(TAG, "wifi_platform_init starting");
     esp_err_t wifi_platform_err = wifi_platform_init();

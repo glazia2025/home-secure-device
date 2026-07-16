@@ -1,0 +1,21 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "spi_bridge.c"
+        "camera_core.c"
+        "webrtc_cam.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp32-camera
+        esp_peer
+        esp_h264
+        json
+        driver
+        esp_psram
+        spi_flash
+        log
+)

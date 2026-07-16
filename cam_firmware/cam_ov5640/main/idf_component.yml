@@ -1,0 +1,9 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf:
+    version: '>=4.1.0'
+  espressif/esp32-camera: '*'
+  espressif/esp_websocket_client: '*'
+  espressif/esp_peer: "^1.2.0"
+  espressif/esp_h264: "*"

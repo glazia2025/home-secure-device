@@ -13,6 +13,10 @@
 !sensor_firmware/glazia_sensor/
 !sensor_firmware/glazia_sensor/**
 
+!cam_firmware/
+!cam_firmware/cam_ov5640/
+!cam_firmware/cam_ov5640/**
+
 # Never track docs/agent/code clutter
 *.md
 **/*.md
