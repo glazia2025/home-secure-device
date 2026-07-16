@@ -5,175 +5,221 @@
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include <inttypes.h>
+#include "freertos/queue.h"
 #include <string.h>
+#include <stdlib.h>
 
 static const char *TAG = "CAM_SPI";
 
-/* ── Pins ──────────────────────────────────────────────────────────────────── */
+/* ── Pins ─────────────────────────────────────────────────────────────────── */
 #define CAM_SPI_HOST    SPI3_HOST
 #define CAM_SPI_SCLK    4
-#define CAM_SPI_MOSI    17
-#define CAM_SPI_MISO    18
-#define CAM_SPI_CS      16
-#define CAM_SPI_DRDY    15          /* input: cam DRDY output, POSEDGE interrupt */
-#define CAM_SPI_CLK_HZ  (8 * 1000 * 1000)
+#define CAM_SPI_MOSI    12
+#define CAM_SPI_MISO    11
+#define CAM_SPI_CS      13
+#define CAM_SPI_DRDY    10          /* input: cam_esp DRDY output */
+#define CAM_SPI_CLK_HZ  (1 * 1000 * 1000)   /* 1 MHz — MISO signal integrity over dupont wires */
 
-/* ── Transfer sizes ────────────────────────────────────────────────────────── */
-#define SPI_CMD_SIZE       32       /* hub→cam command transaction (cam IDLE state) */
-#define SPI_TRANS_SIZE     5120     /* must match SPI_TRANS_SIZE in spi_bridge.c */
-#define FRAME_INTERVAL_MS  100      /* max 10fps — prevents control WS TCP saturation */
+/* ── Outbound message (heap payload, freed by relay_task after copy) ─────── */
+typedef struct {
+    uint8_t   type;
+    uint16_t  payload_len;
+    char     *payload;   /* heap-allocated; relay_task frees */
+} cam_msg_t;
 
-/* ── Command encoding (first 4 MOSI bytes) ────────────────────────────────── */
-static const uint8_t CMD_START[4]    = {0xCA, 0x01, 0x00, 0x00};
-static const uint8_t CMD_STOP[4]     = {0xCA, 0x00, 0x00, 0x00};
+/* ── Module state ─────────────────────────────────────────────────────────── */
+static spi_device_handle_t  s_spi_dev    = NULL;
+static QueueHandle_t        s_tx_queue   = NULL;
+static uint8_t             *s_tx_buf     = NULL;
+static uint8_t             *s_rx_buf     = NULL;
+static volatile bool        s_streaming  = false;   /* true between webrtc_start and stop */
+static char                *s_pending_offer = NULL; /* cached offer JSON for WS retry */
 
-/* ── Module state ──────────────────────────────────────────────────────────── */
-static spi_device_handle_t  s_spi_dev       = NULL;
-static volatile bool        s_proxy_running  = false;
-static volatile bool        s_stop_requested = false;
-static TaskHandle_t         s_proxy_task     = NULL;
-
-/* BSS (internal SRAM) — DMA-capable without heap_caps */
-static uint8_t s_cmd_buf[SPI_CMD_SIZE];
-static uint8_t s_tx_zero_buf[SPI_TRANS_SIZE];  /* all-zeros MOSI for normal frame reads */
-
-/* Pre-allocated at cam_spi_init() before WiFi/WS take internal SRAM */
-static uint8_t *s_frame_buf = NULL;
-
-/* ── DRDY rising-edge ISR → task notification ──────────────────────────────── */
-static void IRAM_ATTR drdy_isr(void *arg)
+/* ── Build MOSI from a queued message into s_tx_buf ──────────────────────── */
+static void build_tx(const cam_msg_t *msg)
 {
-    BaseType_t hp = pdFALSE;
-    if (s_proxy_task) {
-        vTaskNotifyGiveFromISR(s_proxy_task, &hp);
-        portYIELD_FROM_ISR(hp);
+    memset(s_tx_buf, 0, CAM_SPI_MSG_SIZE);
+    if (!msg || msg->type == CAM_MSG_IDLE) return;
+    s_tx_buf[0] = 0xCA;
+    s_tx_buf[1] = msg->type;
+    s_tx_buf[2] = (uint8_t)(msg->payload_len >> 8);
+    s_tx_buf[3] = (uint8_t)(msg->payload_len & 0xFF);
+    if (msg->payload_len > 0 && msg->payload) {
+        uint16_t copy = msg->payload_len;
+        if (copy > CAM_SPI_MSG_SIZE - 4) {
+            ESP_LOGW(TAG, "Payload truncated from %u to %u bytes", copy, CAM_SPI_MSG_SIZE - 4);
+            copy = CAM_SPI_MSG_SIZE - 4;
+        }
+        memcpy(s_tx_buf + 4, msg->payload, copy);
     }
 }
 
-/* ── Frame proxy task ──────────────────────────────────────────────────────── */
-static void frame_proxy_task(void *arg)
+/* ── Execute one full-duplex 4096-byte SPI transaction ───────────────────── */
+static void do_transaction(void)
 {
-    if (!s_frame_buf) {
-        ESP_LOGE(TAG, "No DMA frame buf — cam_spi_init() failed to alloc");
-        s_proxy_task = NULL;
-        vTaskDelete(NULL);
+    spi_transaction_t t = {
+        .length    = CAM_SPI_MSG_SIZE * 8,
+        .rxlength  = CAM_SPI_MSG_SIZE * 8,
+        .tx_buffer = s_tx_buf,
+        .rx_buffer = s_rx_buf,
+    };
+    esp_err_t err = spi_device_transmit(s_spi_dev, &t);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SPI transaction error: %s", esp_err_to_name(err));
+    }
+}
+
+/* ── Parse MISO and forward signaling to server ───────────────────────────── */
+static void dispatch_rx(void)
+{
+    if (s_rx_buf[0] != 0xCA) {
+        if (s_streaming) {
+            bool all_zero = true;
+            for (int i = 0; i < 8; i++) {
+                if (s_rx_buf[i] != 0x00) all_zero = false;
+            }
+            if (all_zero) {
+                ESP_LOGI(TAG, "dispatch_rx: MISO all-zero — cam idle or MISO wire open");
+            } else {
+                ESP_LOGW(TAG, "dispatch_rx: bad magic 0x%02X. First 8 bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+                         s_rx_buf[0], s_rx_buf[0], s_rx_buf[1], s_rx_buf[2], s_rx_buf[3],
+                         s_rx_buf[4], s_rx_buf[5], s_rx_buf[6], s_rx_buf[7]);
+            }
+        }
+        return;
+    }
+    uint8_t  type = s_rx_buf[1];
+    uint16_t len  = ((uint16_t)s_rx_buf[2] << 8) | s_rx_buf[3];
+
+    if (type == CAM_MSG_IDLE) return;
+    if (len > CAM_SPI_MSG_SIZE - 4) {
+        ESP_LOGW(TAG, "RX payload len %u exceeds max — discarding type 0x%02X", len, type);
         return;
     }
 
-    ESP_LOGI(TAG, "Frame proxy task started");
+    char *payload = (char *)&s_rx_buf[4];
 
-    TickType_t last_drdy_tick  = xTaskGetTickCount();
-    TickType_t last_frame_tick = 0;
-
-    while (s_proxy_running) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
-
-        /* Only skip the SPI cycle when no frame is pending (DRDY LOW).
-         * If DRDY is HIGH the coprocessor is waiting — fall through to
-         * send CMD_STOP in MOSI, then the s_stop_requested block breaks. */
-        if (!s_proxy_running && gpio_get_level(CAM_SPI_DRDY) == 0) {
-            break;
+    switch (type) {
+    case CAM_MSG_OFFER:
+        ESP_LOGI(TAG, "RX: offer from cam_esp (%u bytes) — forwarding to server", len);
+        if (len > 0) {
+            char saved = payload[len];
+            payload[len] = '\0';
+            free(s_pending_offer);
+            s_pending_offer = strdup(payload);   /* cache for WS reconnect retry */
+            hub_control_ws_send_json(payload);
+            payload[len] = saved;
         }
-
-        if (!gpio_get_level(CAM_SPI_DRDY)) {
-            if (s_stop_requested && (xTaskGetTickCount() - last_drdy_tick) > pdMS_TO_TICKS(2000)) {
-                ESP_LOGW(TAG, "DRDY timeout after stop — forcing proxy exit");
-                s_proxy_running  = false;
-                s_stop_requested = false;
-                break;
-            }
-            if (!s_stop_requested && (xTaskGetTickCount() - last_drdy_tick) > pdMS_TO_TICKS(5000)) {
-                ESP_LOGW(TAG, "No DRDY for 5 s — re-sending START to coprocessor");
-                cam_spi_send_start();
-                last_drdy_tick = xTaskGetTickCount();
-            }
-            continue;
+        break;
+    case CAM_MSG_ICE_FROM_CAM:
+        ESP_LOGI(TAG, "RX: ICE candidate from cam_esp (%u bytes) — forwarding to server", len);
+        if (len > 0) {
+            char saved = payload[len];
+            payload[len] = '\0';
+            hub_control_ws_send_json(payload);
+            payload[len] = saved;
         }
-
-        last_drdy_tick = xTaskGetTickCount();
-
-        /* 2 ms settle: let slave DMA hardware stabilise after DRDY rises */
-        vTaskDelay(pdMS_TO_TICKS(2));
-
-        /* Full-duplex: MOSI carries CMD_STOP when stopping, zeros otherwise.
-         * The coprocessor checks rx_buf[0:4] for CMD_STOP after each transfer. */
-        if (s_stop_requested) {
-            memcpy(s_tx_zero_buf, CMD_STOP, 4);
-        }
-
-        spi_transaction_t t = {
-            .length    = (size_t)SPI_TRANS_SIZE * 8,
-            .rxlength  = (size_t)SPI_TRANS_SIZE * 8,
-            .tx_buffer = s_tx_zero_buf,
-            .rx_buffer = s_frame_buf,
-        };
-        esp_err_t err = spi_device_polling_transmit(s_spi_dev, &t);
-
-        if (s_stop_requested) {
-            memset(s_tx_zero_buf, 0, 4);   /* restore zeros for next session */
-            s_proxy_running = false;
-            break;
-        }
-
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "SPI frame rx failed: %s", esp_err_to_name(err));
-            continue;
-        }
-
-        uint32_t frame_len;
-        memcpy(&frame_len, s_frame_buf, sizeof(frame_len));
-
-        if (frame_len == 0 || frame_len > (uint32_t)(SPI_TRANS_SIZE - 4)) {
-            ESP_LOGW(TAG, "Invalid frame_len=%" PRIu32 ", discarding", frame_len);
-            continue;
-        }
-
-        /* JPEG SOI = 0xFF 0xD8, always followed by 0xFF (next marker byte).
-         * Checking 3 bytes catches SPI-corrupted frames that accidentally have
-         * the right first 2 bytes but wrong continuation. */
-        if (s_frame_buf[4] != 0xFF || s_frame_buf[5] != 0xD8 || s_frame_buf[6] != 0xFF) {
-            ESP_LOGW(TAG, "Bad JPEG header (0x%02X 0x%02X 0x%02X), discarding",
-                     s_frame_buf[4], s_frame_buf[5], s_frame_buf[6]);
-            continue;
-        }
-
-        esp_err_t ws_err = hub_control_ws_send_bin(s_frame_buf + 4, (size_t)frame_len,
-                                                    pdMS_TO_TICKS(500));
-        if (ws_err == ESP_OK) {
-            static uint32_t s_frame_count = 0;
-            if (++s_frame_count % 30 == 0) {
-                ESP_LOGI(TAG, "Frame WS sent (%" PRIu32 " bytes, count=%" PRIu32 ")",
-                         frame_len, s_frame_count);
-            }
-        } else {
-            ESP_LOGW(TAG, "Frame WS send failed: %s", esp_err_to_name(ws_err));
-        }
-
-        /* Rate limit: enforce minimum inter-frame interval to prevent TCP send
-         * buffer saturation on the control WS. At 22fps the ~5 KB frames fill
-         * the lwIP 5760 B send buffer in ~51ms; 100ms/frame keeps throughput at
-         * ~49 KB/s so the buffer drains between sends. Skip when stopping so the
-         * proxy exits promptly rather than waiting out the interval. */
-        if (!s_stop_requested) {
-            TickType_t now     = xTaskGetTickCount();
-            TickType_t elapsed = now - last_frame_tick;
-            TickType_t target  = pdMS_TO_TICKS(FRAME_INTERVAL_MS);
-            if (last_frame_tick != 0 && elapsed < target) {
-                vTaskDelay(target - elapsed);
-            }
-        }
-        last_frame_tick = xTaskGetTickCount();
+        break;
+    default:
+        ESP_LOGW(TAG, "RX: unknown type 0x%02X len=%u — ignoring", type, len);
+        break;
     }
-
-    ESP_LOGI(TAG, "Frame proxy task stopped");
-    s_proxy_task = NULL;
-    vTaskDelete(NULL);
 }
 
-/* ── Public API ────────────────────────────────────────────────────────────── */
+/* ── Relay task: polls DRDY, runs SPI, dispatches ────────────────────────── */
+static void relay_task_fn(void *arg)
+{
+    TickType_t last_blind_poll = xTaskGetTickCount();
+    uint32_t   s_poll_count    = 0;
+
+    while (1) {
+        bool drdy    = gpio_get_level(CAM_SPI_DRDY) == 1;
+        bool has_tx  = uxQueueMessagesWaiting(s_tx_queue) > 0;
+
+        /* Blind periodic poll while streaming: fire every 500 ms regardless of
+         * DRDY so a broken or unconnected DRDY wire does not permanently block
+         * offer/ICE delivery. DRDY is the fast path; this is the fallback. */
+        TickType_t now = xTaskGetTickCount();
+        bool blind = s_streaming &&
+                     (now - last_blind_poll) >= pdMS_TO_TICKS(500);
+
+        if (!drdy && !has_tx && !blind) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        if (blind) {
+            ESP_LOGI(TAG, "SPI blind poll #%u (drdy=%d)", (unsigned)++s_poll_count, (int)drdy);
+        }
+
+        last_blind_poll = now;
+
+        cam_msg_t out = {0};
+        bool got = (xQueueReceive(s_tx_queue, &out, 0) == pdTRUE);
+        build_tx(got ? &out : NULL);
+        if (got && out.payload) {
+            free(out.payload);
+            out.payload = NULL;
+        }
+
+        memset(s_rx_buf, 0, CAM_SPI_MSG_SIZE);
+        do_transaction();
+        
+        bool drdy_was_lying = (drdy && s_rx_buf[0] != 0xCA);
+        
+        dispatch_rx();
+
+        /* Longer cooldown after sending a command so cam has time to process
+         * before hub resumes DRDY polling. Prevents DMA-cache stale-data floods. */
+        if (drdy_was_lying) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(got ? 500 : 5));
+        }
+    }
+}
+
+/* ── Queue a message for the relay task to send ──────────────────────────── */
+static void enqueue(uint8_t type, const char *payload, uint16_t len)
+{
+    if (!s_tx_queue) {
+        ESP_LOGW(TAG, "SPI not initialized — dropping msg type 0x%02X", type);
+        return;
+    }
+
+    cam_msg_t msg = {.type = type, .payload_len = 0, .payload = NULL};
+    if (len > 0 && payload) {
+        uint16_t capped = (len > CAM_SPI_MSG_SIZE - 4) ? CAM_SPI_MSG_SIZE - 4 : len;
+        msg.payload = malloc(capped + 1);
+        if (!msg.payload) {
+            ESP_LOGE(TAG, "OOM queueing cam SPI msg type 0x%02X", type);
+            return;
+        }
+        memcpy(msg.payload, payload, capped);
+        msg.payload[capped] = '\0';
+        msg.payload_len = capped;
+    }
+
+    if (xQueueSend(s_tx_queue, &msg, pdMS_TO_TICKS(200)) != pdTRUE) {
+        free(msg.payload);
+        ESP_LOGW(TAG, "SPI TX queue full — dropping msg type 0x%02X", type);
+    }
+}
+
+/* ── Resend cached offer after a WS reconnect ────────────────────────────── */
+void cam_spi_resend_pending_offer(void)
+{
+    if (s_pending_offer) {
+        ESP_LOGI(TAG, "Resending cached offer (%u bytes) to server after WS reconnect",
+                 (unsigned)strlen(s_pending_offer));
+        hub_control_ws_send_json(s_pending_offer);
+    }
+}
+
+/* ── Public API ───────────────────────────────────────────────────────────── */
 
 void cam_spi_init(void)
 {
@@ -183,7 +229,7 @@ void cam_spi_init(void)
         .sclk_io_num     = CAM_SPI_SCLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = SPI_TRANS_SIZE,
+        .max_transfer_sz = CAM_SPI_MSG_SIZE,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(CAM_SPI_HOST, &bus, SPI_DMA_CH_AUTO));
 
@@ -192,105 +238,91 @@ void cam_spi_init(void)
         .clock_speed_hz = CAM_SPI_CLK_HZ,
         .spics_io_num   = CAM_SPI_CS,
         .queue_size     = 1,
-        /* full-duplex: no SPI_DEVICE_HALFDUPLEX flag */
     };
     ESP_ERROR_CHECK(spi_bus_add_device(CAM_SPI_HOST, &dev, &s_spi_dev));
 
-    /* DRDY: input with pull-down, rising-edge interrupt */
+    /* DRDY: level-polled input, no ISR */
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << CAM_SPI_DRDY),
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
-        .intr_type    = GPIO_INTR_POSEDGE,
+        .intr_type    = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&io));
 
-    /* ISR service may already be installed by another driver — ignore if so */
-    esp_err_t isr_err = gpio_install_isr_service(0);
-    if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(isr_err);
-    }
-    ESP_ERROR_CHECK(gpio_isr_handler_add(CAM_SPI_DRDY, drdy_isr, NULL));
-
-    /* Pre-allocate DMA frame buffer now, before WiFi/WS consume internal SRAM.
-     * After WSS connects, internal_largest drops to ~7936 B — too small for 4096+
-     * task stack if we wait until viewer-ready. */
-    s_frame_buf = heap_caps_malloc(SPI_TRANS_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!s_frame_buf) {
-        ESP_LOGE(TAG, "DMA frame buf alloc failed at init (need %d bytes internal)",
-                 SPI_TRANS_SIZE);
-    } else {
-        ESP_LOGI(TAG, "SPI master initialized (SPI3 SCLK=%d MOSI=%d MISO=%d CS=%d DRDY_IN=%d) — DMA buf %d B",
-                 CAM_SPI_SCLK, CAM_SPI_MOSI, CAM_SPI_MISO, CAM_SPI_CS, CAM_SPI_DRDY, SPI_TRANS_SIZE);
-    }
-}
-
-void cam_spi_send_start(void)
-{
-    if (!s_spi_dev) return;
-
-    memcpy(s_cmd_buf, CMD_START, 4);
-    memset(s_cmd_buf + 4, 0, SPI_CMD_SIZE - 4);
-
-    spi_transaction_t t = {
-        .length    = SPI_CMD_SIZE * 8,
-        .tx_buffer = s_cmd_buf,
-        .rx_buffer = NULL,
-    };
-    esp_err_t err = spi_device_transmit(s_spi_dev, &t);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Sent START to cam coprocessor via SPI");
-    } else {
-        ESP_LOGW(TAG, "START cmd failed: %s", esp_err_to_name(err));
-    }
-}
-
-void cam_spi_send_stop(void)
-{
-    /* STOP is embedded in MOSI during the next full-duplex frame transaction */
-    s_stop_requested = true;
-    ESP_LOGI(TAG, "STOP requested — will embed CMD_STOP on next frame transaction");
-}
-
-void cam_spi_proxy_start(void)
-{
-    if (s_proxy_running) return;
-
-    /* Wait for any previous proxy task to fully exit before spawning a new one.
-     * viewer-gone → viewer-ready can arrive 100ms apart; the old task may still
-     * be blocked in ulTaskNotifyTake. Without this wait, both tasks hold internal
-     * SRAM simultaneously and the second alloc fails. */
-    TickType_t wait_start = xTaskGetTickCount();
-    while (s_proxy_task != NULL) {
-        if ((xTaskGetTickCount() - wait_start) > pdMS_TO_TICKS(500)) {
-            ESP_LOGW(TAG, "Old proxy task still alive after 500 ms — aborting start");
-            return;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    s_stop_requested = false;
-    s_proxy_running  = true;
-
-    /* 4096 stack: hub_control_ws_send_bin() queues to WS ring buffer; TLS encryption
-     * runs in the hub_ws task, not here. Raise to 6144 if stack overflow panic occurs. */
-    BaseType_t rc = xTaskCreate(frame_proxy_task, "cam_proxy", 4096, NULL, 5, &s_proxy_task);
-    if (rc != pdPASS) {
-        ESP_LOGE(TAG, "cam_proxy xTaskCreate failed (OOM) internal_largest=%u",
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        s_proxy_running = false;
-        s_proxy_task    = NULL;
+    /* DMA buffers: must be in internal SRAM */
+    s_tx_buf = heap_caps_malloc(CAM_SPI_MSG_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    s_rx_buf = heap_caps_malloc(CAM_SPI_MSG_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!s_tx_buf || !s_rx_buf) {
+        ESP_LOGE(TAG, "DMA buffer alloc failed (need %d B internal ×2)", CAM_SPI_MSG_SIZE);
         return;
     }
-    ESP_LOGI(TAG, "Frame proxy started (WS binary transport)");
+    memset(s_tx_buf, 0, CAM_SPI_MSG_SIZE);
+    memset(s_rx_buf, 0, CAM_SPI_MSG_SIZE);
+
+    /* Queue holds pointers; each slot is one cam_msg_t (~12 bytes) */
+    s_tx_queue = xQueueCreate(4, sizeof(cam_msg_t));
+    if (!s_tx_queue) {
+        ESP_LOGE(TAG, "TX queue create failed");
+        return;
+    }
+
+    BaseType_t rc = xTaskCreatePinnedToCore(relay_task_fn, "cam_relay",
+                                             4096, NULL, 5, NULL, 0);
+    if (rc != pdPASS) {
+        ESP_LOGE(TAG, "cam_relay task create failed");
+        return;
+    }
+
+    ESP_LOGI(TAG, "SPI signaling relay init (SPI3 SCLK=%d MOSI=%d MISO=%d CS=%d DRDY_in=%d)",
+             CAM_SPI_SCLK, CAM_SPI_MOSI, CAM_SPI_MISO, CAM_SPI_CS, CAM_SPI_DRDY);
 }
 
-void cam_spi_proxy_stop(void)
+void cam_spi_webrtc_start(const char *ssid, const char *pass,
+                           const char *turn_user, const char *turn_psw)
 {
-    s_stop_requested = true;
-    if (s_proxy_task) {
-        xTaskNotifyGive(s_proxy_task);   /* wake from ulTaskNotifyTake immediately */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "ssid",      ssid      ? ssid      : "");
+    cJSON_AddStringToObject(root, "pass",      pass      ? pass      : "");
+    cJSON_AddStringToObject(root, "turn_user", turn_user ? turn_user : "");
+    cJSON_AddStringToObject(root, "turn_psw",  turn_psw  ? turn_psw  : "");
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json_str) {
+        ESP_LOGE(TAG, "Failed to build WEBRTC_START payload");
+        return;
     }
-    ESP_LOGI(TAG, "STOP requested — will embed CMD_STOP on next frame transaction");
+
+    ESP_LOGI(TAG, "cam_spi_webrtc_start: ssid=%.24s turn_user=%.16s",
+             ssid ? ssid : "", turn_user ? turn_user : "");
+    free(s_pending_offer);
+    s_pending_offer = NULL;
+    s_streaming = true;
+    enqueue(CAM_MSG_WEBRTC_START, json_str, (uint16_t)strlen(json_str));
+    free(json_str);
+}
+
+void cam_spi_webrtc_stop(void)
+{
+    ESP_LOGI(TAG, "cam_spi_webrtc_stop");
+    s_streaming = false;
+    free(s_pending_offer);
+    s_pending_offer = NULL;
+    enqueue(CAM_MSG_STOP, NULL, 0);
+}
+
+void cam_spi_relay_answer(const char *sdp_str)
+{
+    if (!sdp_str) return;
+    ESP_LOGI(TAG, "Relaying SDP answer to cam_esp (%u bytes)", (unsigned)strlen(sdp_str));
+    enqueue(CAM_MSG_ANSWER, sdp_str, (uint16_t)strlen(sdp_str));
+}
+
+void cam_spi_relay_ice_to_cam(const char *cand_str)
+{
+    if (!cand_str) return;
+    ESP_LOGI(TAG, "Relaying ICE to cam_esp: %.80s", cand_str);
+    enqueue(CAM_MSG_ICE_TO_CAM, cand_str, (uint16_t)strlen(cand_str));
 }

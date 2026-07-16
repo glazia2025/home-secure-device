@@ -37,6 +37,4 @@ idf_component_register(
         esp_lcd_touch_xpt2046
         esp_timer
         esp_adc
-        esp_peer
-        esp_h264
 )

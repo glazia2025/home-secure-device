@@ -1,7 +1,9 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_event.h"
+#include "esp_netif.h"
 #include "spi_bridge.h"
+#include "webrtc_cam.h"
 
 static const char *TAG = "CAM_MAIN";
 
@@ -17,9 +19,11 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialize the event loop (Required for WiFi)
+    // Initialize the event loop and TCP/IP stack (required for WiFi + DHCP)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(esp_netif_init());
 
+    webrtc_cam_init();
     spi_bridge_start();
 
     ESP_LOGI(TAG, "Boot complete. Waiting for Hub commands over SPI...");

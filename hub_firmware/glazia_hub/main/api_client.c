@@ -86,8 +86,10 @@ static int do_request(esp_http_client_method_t method, const char *path,
         .url               = url,
         .event_handler     = http_event_handler,
         .method            = method,
-        .timeout_ms        = 10000,
+        .timeout_ms        = 20000,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .buffer_size       = 5120,
+        .buffer_size_tx    = 5120,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);

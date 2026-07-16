@@ -16,7 +16,7 @@
 #include "freertos/task.h"
 #include "nvs_storage.h"
 #include "state.h"
-#include "webrtc_stream.h"
+#include "cam_spi.h"
 
 static const char *TAG = "HUB_WS";
 
@@ -123,14 +123,14 @@ static void handle_door_lock_command(cJSON *root)
 
 static void handle_viewer_ready(void)
 {
-    ESP_LOGI(TAG, "viewer-ready → starting WebRTC");
-    webrtc_trigger_start();
+    ESP_LOGI(TAG, "viewer-ready → cam_spi_webrtc_start");
+    cam_spi_webrtc_start(g_wifi_ssid, g_wifi_password, g_turn_user, g_turn_psw);
 }
 
 static void handle_viewer_gone(void)
 {
-    ESP_LOGI(TAG, "viewer-gone → stopping WebRTC");
-    webrtc_trigger_stop();
+    ESP_LOGI(TAG, "viewer-gone → cam_spi_webrtc_stop");
+    cam_spi_webrtc_stop();
 }
 
 static void handle_answer(cJSON *root)
@@ -146,7 +146,7 @@ static void handle_answer(cJSON *root)
         ESP_LOGW(TAG, "answer: missing sdp.sdp string");
         return;
     }
-    webrtc_stream_on_answer(sdp_str->valuestring, (int)strlen(sdp_str->valuestring));
+    cam_spi_relay_answer(sdp_str->valuestring);
 }
 
 static void handle_ice_candidate(cJSON *root)
@@ -162,8 +162,8 @@ static void handle_ice_candidate(cJSON *root)
         ESP_LOGW(TAG, "ice-candidate: missing candidate string");
         return;
     }
-    ESP_LOGI(TAG, "Forwarding ICE candidate to peer: %.80s", cand_str->valuestring);
-    webrtc_stream_on_ice_candidate(cand_str->valuestring, (int)strlen(cand_str->valuestring));
+    ESP_LOGI(TAG, "Relaying ICE candidate to cam_esp: %.80s", cand_str->valuestring);
+    cam_spi_relay_ice_to_cam(cand_str->valuestring);
 }
 
 static void handle_sensor_delete_command(cJSON *root)
@@ -276,10 +276,11 @@ static void websocket_event_handler(void *handler_args,
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "Connected to hub control websocket");
         log_tls_heap("WSS connected");
+        cam_spi_resend_pending_offer();
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
-        webrtc_trigger_stop();
+        cam_spi_webrtc_stop();
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGW(TAG, "Hub control websocket error");
@@ -323,7 +324,7 @@ esp_err_t hub_control_ws_start(void)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_name         = "hub_ws",
         .task_stack = 4096,
-        .buffer_size = 4096,  /* SDP strings are usually 2-4 KB; keep WSS memory below event TLS pressure. */
+        .buffer_size = 5120,  /* SDP strings are usually 2-4 KB; keep WSS memory below event TLS pressure. */
         .network_timeout_ms = 20000,
         .reconnect_timeout_ms = 5000,
         .ping_interval_sec = 20,
@@ -344,8 +345,6 @@ esp_err_t hub_control_ws_start(void)
         s_client = NULL;
         return err;
     }
-
-    webrtc_stream_controller_init();
 
     err = esp_websocket_client_start(s_client);
     if (err != ESP_OK) {
