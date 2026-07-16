@@ -15,8 +15,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_storage.h"
-#include "cam_spi.h"
 #include "state.h"
+#include "webrtc_stream.h"
 
 static const char *TAG = "HUB_WS";
 
@@ -61,15 +61,6 @@ void hub_control_ws_send_json(const char *json_str)
     if (sent < 0) {
         ESP_LOGW(TAG, "hub_control_ws_send_json failed (len=%d)", len);
     }
-}
-
-esp_err_t hub_control_ws_send_bin(const uint8_t *data, size_t len, TickType_t ticks_to_wait)
-{
-    if (!s_client || !esp_websocket_client_is_connected(s_client)) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    int sent = esp_websocket_client_send_bin(s_client, (const char *)data, (int)len, ticks_to_wait);
-    return (sent >= 0) ? ESP_OK : ESP_FAIL;
 }
 
 static void send_door_lock_ack(const char *command_id,
@@ -130,22 +121,49 @@ static void handle_door_lock_command(cJSON *root)
     }
 }
 
-static void handle_viewer_ready(cJSON *root)
+static void handle_viewer_ready(void)
 {
-    cJSON *hubId = cJSON_GetObjectItem(root, "hubId");
-    const char *id_str = (cJSON_IsString(hubId) && hubId->valuestring) ? hubId->valuestring : "unknown";
-    ESP_LOGI(TAG, "viewer-ready (hubId=%s) → UART start + proxy", id_str);
-    cam_spi_send_start();
-    cam_spi_proxy_start();
+    ESP_LOGI(TAG, "viewer-ready → starting WebRTC");
+    webrtc_trigger_start();
 }
 
-static void handle_viewer_gone(cJSON *root)
+static void handle_viewer_gone(void)
 {
-    cJSON *hubId = cJSON_GetObjectItem(root, "hubId");
-    const char *id_str = (cJSON_IsString(hubId) && hubId->valuestring) ? hubId->valuestring : "unknown";
-    ESP_LOGI(TAG, "viewer-gone (hubId=%s) → UART stop + proxy stop", id_str);
-    cam_spi_send_stop();
-    cam_spi_proxy_stop();
+    ESP_LOGI(TAG, "viewer-gone → stopping WebRTC");
+    webrtc_trigger_stop();
+}
+
+static void handle_answer(cJSON *root)
+{
+    /* { "type":"answer", "sdp":{"type":"answer","sdp":"<raw_sdp>"}, "hubId":"..." } */
+    cJSON *sdp_obj = cJSON_GetObjectItem(root, "sdp");
+    if (!cJSON_IsObject(sdp_obj)) {
+        ESP_LOGW(TAG, "answer: missing sdp object");
+        return;
+    }
+    cJSON *sdp_str = cJSON_GetObjectItem(sdp_obj, "sdp");
+    if (!cJSON_IsString(sdp_str) || !sdp_str->valuestring) {
+        ESP_LOGW(TAG, "answer: missing sdp.sdp string");
+        return;
+    }
+    webrtc_stream_on_answer(sdp_str->valuestring, (int)strlen(sdp_str->valuestring));
+}
+
+static void handle_ice_candidate(cJSON *root)
+{
+    /* { "type":"ice-candidate", "candidate":{"candidate":"<raw>","sdpMid":"0",...} } */
+    cJSON *cand_obj = cJSON_GetObjectItem(root, "candidate");
+    if (!cJSON_IsObject(cand_obj)) {
+        ESP_LOGW(TAG, "ice-candidate: missing candidate object");
+        return;
+    }
+    cJSON *cand_str = cJSON_GetObjectItem(cand_obj, "candidate");
+    if (!cJSON_IsString(cand_str) || !cand_str->valuestring) {
+        ESP_LOGW(TAG, "ice-candidate: missing candidate string");
+        return;
+    }
+    ESP_LOGI(TAG, "Forwarding ICE candidate to peer: %.80s", cand_str->valuestring);
+    webrtc_stream_on_ice_candidate(cand_str->valuestring, (int)strlen(cand_str->valuestring));
 }
 
 static void handle_sensor_delete_command(cJSON *root)
@@ -220,20 +238,13 @@ static void handle_ws_text(const char *data, int len)
         } else if (strcmp(type->valuestring, "door_lock_command") == 0) {
             handle_door_lock_command(root);
         } else if (strcmp(type->valuestring, "viewer-ready") == 0) {
-            handle_viewer_ready(root);
+            handle_viewer_ready();
         } else if (strcmp(type->valuestring, "viewer-gone") == 0) {
-            handle_viewer_gone(root);
-        } else if (strcmp(type->valuestring, "camera_stream_command") == 0) {
-            cJSON *action = cJSON_GetObjectItem(root, "action");
-            if (cJSON_IsString(action) && strcmp(action->valuestring, "start") == 0) {
-                ESP_LOGI(TAG, "camera_stream_command start → UART + proxy");
-                cam_spi_send_start();
-                cam_spi_proxy_start();
-            } else if (cJSON_IsString(action) && strcmp(action->valuestring, "stop") == 0) {
-                ESP_LOGI(TAG, "camera_stream_command stop → UART + proxy stop");
-                cam_spi_send_stop();
-                cam_spi_proxy_stop();
-            }
+            handle_viewer_gone();
+        } else if (strcmp(type->valuestring, "answer") == 0) {
+            handle_answer(root);
+        } else if (strcmp(type->valuestring, "ice-candidate") == 0) {
+            handle_ice_candidate(root);
         } else if (strcmp(type->valuestring, "sensor_toggle_command") == 0) {
             handle_sensor_toggle_command(root);
         } else if (strcmp(type->valuestring, "sensor_delete_command") == 0) {
@@ -268,8 +279,7 @@ static void websocket_event_handler(void *handler_args,
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
-        cam_spi_send_stop();
-        cam_spi_proxy_stop();
+        webrtc_trigger_stop();
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGW(TAG, "Hub control websocket error");
@@ -312,12 +322,12 @@ esp_err_t hub_control_ws_start(void)
         .headers           = headers,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_name         = "hub_ws",
-        .task_stack = 8192,   /* mbedTLS stack frames can use 3-5 KB; 4096 was too tight */
-        .buffer_size = 8192,
+        .task_stack = 4096,
+        .buffer_size = 4096,  /* SDP strings are usually 2-4 KB; keep WSS memory below event TLS pressure. */
         .network_timeout_ms = 20000,
-        .reconnect_timeout_ms = 2000,  /* faster reconnect after server-side disconnect */
-        .ping_interval_sec = 120,      /* server drops WS at ~80s; ping at 120s avoids hitting a dead socket */
-        .pingpong_timeout_sec = 60,
+        .reconnect_timeout_ms = 5000,
+        .ping_interval_sec = 20,
+        .pingpong_timeout_sec = 10,
         .keep_alive_enable = true,
     };
 
@@ -334,6 +344,8 @@ esp_err_t hub_control_ws_start(void)
         s_client = NULL;
         return err;
     }
+
+    webrtc_stream_controller_init();
 
     err = esp_websocket_client_start(s_client);
     if (err != ESP_OK) {

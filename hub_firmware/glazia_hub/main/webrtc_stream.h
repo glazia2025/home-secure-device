@@ -2,7 +2,7 @@
 
 void webrtc_stream_controller_init(void);
 void webrtc_trigger_start(void);
-// Add this to webrtc_stream.h
+void webrtc_trigger_stop(void);
 
 /* Lazily pre-generates the DTLS certificate before the first WebRTC session. */
 void webrtc_stream_init(void);
