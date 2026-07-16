@@ -37,6 +37,8 @@ static uint8_t             *s_tx_buf     = NULL;
 static uint8_t             *s_rx_buf     = NULL;
 static volatile bool        s_streaming  = false;   /* true between webrtc_start and stop */
 static char                *s_pending_offer = NULL; /* cached offer JSON for WS retry */
+static StackType_t         *s_relay_stack = NULL;
+static StaticTask_t        *s_relay_tcb = NULL;
 
 /* ── Build MOSI from a queued message into s_tx_buf ──────────────────────── */
 static void build_tx(const cam_msg_t *msg)
@@ -268,15 +270,25 @@ void cam_spi_init(void)
         return;
     }
 
-    BaseType_t rc = xTaskCreatePinnedToCore(relay_task_fn, "cam_relay",
-                                             4096, NULL, 5, NULL, 0);
-    if (rc != pdPASS) {
+    /* Keep this long-lived task's stack out of scarce internal SRAM. */
+    s_relay_stack = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    s_relay_tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+    if (!s_relay_stack || !s_relay_tcb) {
+        ESP_LOGE(TAG, "Failed to allocate cam_relay task in PSRAM");
+        return;
+    }
+    TaskHandle_t relay = xTaskCreateStaticPinnedToCore(
+        relay_task_fn, "cam_relay", 4096, NULL, 5,
+        s_relay_stack, s_relay_tcb, 0);
+    if (!relay) {
         ESP_LOGE(TAG, "cam_relay task create failed");
         return;
     }
 
-    ESP_LOGI(TAG, "SPI signaling relay init (SPI3 SCLK=%d MOSI=%d MISO=%d CS=%d DRDY_in=%d)",
-             CAM_SPI_SCLK, CAM_SPI_MOSI, CAM_SPI_MISO, CAM_SPI_CS, CAM_SPI_DRDY);
+    ESP_LOGI(TAG, "SPI relay init (SCLK=%d MOSI=%d MISO=%d CS=%d DRDY=%d internal_free=%u largest=%u)",
+             CAM_SPI_SCLK, CAM_SPI_MOSI, CAM_SPI_MISO, CAM_SPI_CS, CAM_SPI_DRDY,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 void cam_spi_webrtc_start(const char *ssid, const char *pass,

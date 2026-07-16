@@ -16,9 +16,9 @@ static const char *TAG = "SPI_BRIDGE";
 #define CAM_SPI_HOST    SPI2_HOST
 #define CAM_SPI_SCLK    14
 #define CAM_SPI_MOSI    1       /* receives data from hub */
-#define CAM_SPI_MISO    46      /* sends data to hub */
+#define CAM_SPI_MISO    2       /* sends data to hub; avoids GPIO46 strapping/pulldown */
 #define CAM_SPI_CS      21
-#define CAM_SPI_DRDY    0       /* output: HIGH = cam has a message queued for hub */
+#define CAM_SPI_DRDY    47      /* output: HIGH = queued data; avoid GPIO0 boot strap */
 
 /* ── Outbound message (cam→hub), queued by webrtc_cam ─────────────────────── */
 typedef struct {
@@ -48,6 +48,10 @@ static spi_slave_interface_config_t s_slave = {
 
 static esp_err_t slave_init(void)
 {
+    if (!GPIO_IS_VALID_OUTPUT_GPIO(CAM_SPI_MISO)) {
+        ESP_LOGE(TAG, "SPI MISO GPIO %d is not output-capable", CAM_SPI_MISO);
+        return ESP_ERR_INVALID_ARG;
+    }
     return spi_slave_initialize(CAM_SPI_HOST, &s_bus, &s_slave, SPI_DMA_CH_AUTO);
 }
 
@@ -62,7 +66,8 @@ static bool prepare_miso(uint8_t *tx_buf)
     memset(tx_buf, 0, CAM_SPI_MSG_SIZE);
     cam_msg_t out;
     if (xQueueReceive(s_tx_queue, &out, 0) != pdTRUE) {
-        gpio_set_level(CAM_SPI_DRDY, 0);
+        /* Only clear DRDY after an actual pending message is delivered. A
+         * producer may enqueue between this receive and the next transaction. */
         return false;
     }
 

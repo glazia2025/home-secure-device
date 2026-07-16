@@ -47,10 +47,26 @@ static SemaphoreHandle_t s_cert_ready = NULL;
 static esp_peer_handle_t  s_peer    = NULL;
 static volatile bool      s_running = false;
 static volatile bool      s_connected = false;
+static volatile bool      s_stopping = false;
+static volatile bool      s_stop_scheduled = false;
+
+/* ICE configuration must outlive cam_webrtc_task. */
+static char s_turn_user[32];
+static char s_turn_psw[32];
+static esp_peer_ice_server_cfg_t s_ice_servers[3];
 
 static EventGroupHandle_t s_wifi_event_group = NULL;
 static int                s_wifi_retry_count = 0;
 static bool               s_wifi_started     = false;
+
+static void log_heap(const char *stage)
+{
+    ESP_LOGI(TAG, "%s: internal_free=%u largest=%u psram_free=%u",
+             stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
 
 /* ── WiFi event handler ──────────────────────────────────────────────────── */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -98,7 +114,15 @@ static bool wifi_connect(const char *ssid, const char *pass)
 
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     s_wifi_retry_count = 0;
-    esp_wifi_start();
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECT_BIT | WIFI_FAIL_BIT);
+    esp_err_t wifi_err = esp_wifi_start();
+    if (wifi_err == ESP_ERR_INVALID_STATE) {
+        wifi_err = esp_wifi_connect();
+    }
+    if (wifi_err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi start/connect failed: %s", esp_err_to_name(wifi_err));
+        return false;
+    }
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                            WIFI_CONNECT_BIT | WIFI_FAIL_BIT,
@@ -175,6 +199,7 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
 }
 
 static void video_task_fn(void *arg);
+static void deferred_stop_task(void *arg);
 
 static int on_state_cb(esp_peer_state_t state, void *ctx)
 {
@@ -192,9 +217,16 @@ static int on_state_cb(esp_peer_state_t state, void *ctx)
         break;
     case ESP_PEER_STATE_CONNECT_FAILED:
     case ESP_PEER_STATE_DISCONNECTED:
-        ESP_LOGW(TAG, "WebRTC disconnected/failed — stopping");
+        ESP_LOGW(TAG, "WebRTC disconnected/failed — scheduling stop");
+        s_running = false;
         s_connected = false;
-        webrtc_cam_stop();
+        if (!s_stopping && !s_stop_scheduled) {
+            s_stop_scheduled = true;
+            if (xTaskCreate(deferred_stop_task, "cam_stop", 4096, NULL, 6, NULL) != pdPASS) {
+                s_stop_scheduled = false;
+                ESP_LOGE(TAG, "Failed to create deferred stop task");
+            }
+        }
         break;
     default:
         break;
@@ -240,6 +272,7 @@ static void video_task_fn(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    log_heap("H264 encoder opened");
 
     uint8_t *h264_buf = heap_caps_malloc(H264_OUT_BUF_SIZE, MALLOC_CAP_SPIRAM);
     if (!h264_buf) {
@@ -345,15 +378,17 @@ static void cam_webrtc_task(void *arg)
         return;
     }
 
-    /* ICE servers */
-    esp_peer_ice_server_cfg_t ice[3] = {
-        {.stun_url = "stun:stun.l.google.com:19302", .user = NULL, .psw = NULL},
-        {.stun_url = "turn:13.51.196.176:3478",      .user = a->turn_user, .psw = a->turn_psw},
-        {.stun_url = "turns:home-secure.glazia.in:5349", .user = a->turn_user, .psw = a->turn_psw},
-    };
+    strlcpy(s_turn_user, a->turn_user, sizeof(s_turn_user));
+    strlcpy(s_turn_psw, a->turn_psw, sizeof(s_turn_psw));
+    s_ice_servers[0] = (esp_peer_ice_server_cfg_t){
+        .stun_url = "stun:stun.l.google.com:19302", .user = NULL, .psw = NULL};
+    s_ice_servers[1] = (esp_peer_ice_server_cfg_t){
+        .stun_url = "turn:13.51.196.176:3478", .user = s_turn_user, .psw = s_turn_psw};
+    s_ice_servers[2] = (esp_peer_ice_server_cfg_t){
+        .stun_url = "turns:home-secure.glazia.in:5349", .user = s_turn_user, .psw = s_turn_psw};
 
     esp_peer_cfg_t cfg = {
-        .server_lists    = ice,
+        .server_lists    = s_ice_servers,
         .server_num      = 3,
         .role            = ESP_PEER_ROLE_CONTROLLING,
         .ice_trans_policy = ESP_PEER_ICE_TRANS_POLICY_ALL,
@@ -370,13 +405,15 @@ static void cam_webrtc_task(void *arg)
         .on_msg          = on_msg_cb,
     };
 
-    if (esp_peer_open(&cfg, esp_peer_get_default_impl(), &s_peer) != ESP_PEER_ERR_NONE) {
-        ESP_LOGE(TAG, "esp_peer_open failed");
+    int peer_err = esp_peer_open(&cfg, esp_peer_get_default_impl(), &s_peer);
+    if (peer_err != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "esp_peer_open failed: %d", peer_err);
         free(a);
         s_running = false;
         vTaskDelete(NULL);
         return;
     }
+    log_heap("Peer opened");
 
     /* Start the main-loop task */
     s_loop_task = xTaskCreateStaticPinnedToCore(
@@ -385,7 +422,14 @@ static void cam_webrtc_task(void *arg)
         s_loop_stack, &s_loop_tcb, 0);
 
     /* Trigger SDP offer generation */
-    esp_peer_new_connection(s_peer);
+    peer_err = esp_peer_new_connection(s_peer);
+    if (peer_err != ESP_PEER_ERR_NONE) {
+        ESP_LOGE(TAG, "esp_peer_new_connection failed: %d", peer_err);
+        free(a);
+        webrtc_cam_stop();
+        vTaskDelete(NULL);
+        return;
+    }
     ESP_LOGI(TAG, "WebRTC session started — waiting for offer/answer");
 
     free(a);
@@ -396,6 +440,8 @@ static void cam_webrtc_task(void *arg)
 
 void webrtc_cam_init(void)
 {
+    /* esp_peer's INFO logs include TURN credentials; keep errors/warnings only. */
+    esp_log_level_set("AGENT", ESP_LOG_WARN);
     s_cert_ready = xSemaphoreCreateBinary();
 
     /* Pre-allocate PSRAM stacks so they're available when a session starts */
@@ -409,6 +455,7 @@ void webrtc_cam_init(void)
     /* Kick off cert pre-generation in background */
     xTaskCreate(cert_pregen_task, "cert_pregen", 8192, NULL, 3, NULL);
     ESP_LOGI(TAG, "WebRTC cam initialised (PSRAM stacks ready)");
+    log_heap("WebRTC init");
 }
 
 void webrtc_cam_start_from_json(const char *json)
@@ -451,6 +498,8 @@ void webrtc_cam_start_from_json(const char *json)
 
     s_running   = true;
     s_connected = false;
+    s_stopping  = false;
+    s_stop_scheduled = false;
     s_loop_task  = NULL;
     s_video_task = NULL;
 
@@ -484,26 +533,40 @@ void webrtc_cam_on_ice(const char *cand_str, int len)
 
 void webrtc_cam_stop(void)
 {
+    if (s_stopping) return;
     if (!s_running && !s_peer) return;
+    s_stopping = true;
+    bool was_connected = s_connected;
     s_running   = false;
     s_connected = false;
 
-    if (s_peer) {
-        esp_peer_handle_t peer = s_peer;
-        s_peer = NULL;
-        if (s_connected) esp_peer_disconnect(peer);
-        esp_peer_close(peer);
+    /* Let tasks leave before destroying the peer/camera objects they use. */
+    for (int i = 0; i < 50 && (s_loop_task || s_video_task); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 
-    /* Tasks observe s_running and self-delete; give them time to exit */
-    vTaskDelay(pdMS_TO_TICKS(300));
-    s_loop_task  = NULL;
-    s_video_task = NULL;
+    esp_peer_handle_t peer = s_peer;
+    s_peer = NULL;
+    if (peer) {
+        if (was_connected) esp_peer_disconnect(peer);
+        esp_peer_close(peer);
+    }
 
     /* Disconnect WiFi so it can reconnect on next session with fresh creds */
     if (s_wifi_started) {
         esp_wifi_disconnect();
+        esp_wifi_stop();
     }
 
+    s_stopping = false;
     ESP_LOGI(TAG, "WebRTC stopped");
+    log_heap("After WebRTC stop");
+}
+
+static void deferred_stop_task(void *arg)
+{
+    (void)arg;
+    s_stop_scheduled = false;
+    webrtc_cam_stop();
+    vTaskDelete(NULL);
 }

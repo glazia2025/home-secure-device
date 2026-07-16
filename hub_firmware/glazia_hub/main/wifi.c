@@ -7,7 +7,7 @@
 #include "aqi_sensor.h"
 #include "espnow.h"
 #include "nvs_storage.h"
-#include "webrtc_stream.h"
+#include "cam_spi.h"
 #include "fingerprint.h"
 
 #include "esp_wifi.h"
@@ -260,7 +260,7 @@ void wifi_enter_offline_mode(void)
     s_offline_mode = true;
     espnow_deinit();
     hub_control_ws_stop();
-    webrtc_stream_stop();
+    cam_spi_webrtc_stop();
 
     esp_err_t err = esp_wifi_disconnect();
     if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {

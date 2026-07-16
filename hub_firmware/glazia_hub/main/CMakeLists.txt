@@ -7,7 +7,6 @@ idf_component_register(
         "ble.c"
         "wifi.c"
         "api_client.c"
-        "webrtc_stream.c"
         "door_lock.c"
         "espnow.c"
         "display.c"
