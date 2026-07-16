@@ -68,6 +68,13 @@ static void log_heap(const char *stage)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
+static void wifi_stop(void)
+{
+    if (!s_wifi_started) return;
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+}
+
 /* ── WiFi event handler ──────────────────────────────────────────────────── */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
@@ -137,6 +144,7 @@ static bool wifi_connect(const char *ssid, const char *pass)
         return true;
     }
     ESP_LOGE(TAG, "WiFi connection to '%s' failed", ssid);
+    wifi_stop();
     return false;
 }
 
@@ -213,6 +221,17 @@ static int on_state_cb(esp_peer_state_t state, void *ctx)
                 video_task_fn, "cam_video",
                 8192, NULL, 4,
                 s_video_stack, &s_video_tcb, 1);
+            if (!s_video_task) {
+                ESP_LOGE(TAG, "Failed to create video task");
+                s_running = false;
+                s_connected = false;
+                if (!s_stop_scheduled) {
+                    s_stop_scheduled = true;
+                    if (xTaskCreate(deferred_stop_task, "cam_stop", 4096, NULL, 6, NULL) != pdPASS) {
+                        s_stop_scheduled = false;
+                    }
+                }
+            }
         }
         break;
     case ESP_PEER_STATE_CONNECT_FAILED:
@@ -410,6 +429,7 @@ static void cam_webrtc_task(void *arg)
         ESP_LOGE(TAG, "esp_peer_open failed: %d", peer_err);
         free(a);
         s_running = false;
+        wifi_stop();
         vTaskDelete(NULL);
         return;
     }
@@ -420,6 +440,16 @@ static void cam_webrtc_task(void *arg)
         loop_task_fn, "cam_peer_loop",
         6144, NULL, 5,
         s_loop_stack, &s_loop_tcb, 0);
+    if (!s_loop_task) {
+        ESP_LOGE(TAG, "Failed to create peer loop task");
+        esp_peer_close(s_peer);
+        s_peer = NULL;
+        free(a);
+        s_running = false;
+        wifi_stop();
+        vTaskDelete(NULL);
+        return;
+    }
 
     /* Trigger SDP offer generation */
     peer_err = esp_peer_new_connection(s_peer);
@@ -440,9 +470,13 @@ static void cam_webrtc_task(void *arg)
 
 void webrtc_cam_init(void)
 {
-    /* esp_peer's INFO logs include TURN credentials; keep errors/warnings only. */
-    esp_log_level_set("AGENT", ESP_LOG_INFO);
+    /* esp_peer INFO logs include TURN credentials. */
+    esp_log_level_set("AGENT", ESP_LOG_WARN);
     s_cert_ready = xSemaphoreCreateBinary();
+    if (!s_cert_ready) {
+        ESP_LOGE(TAG, "Failed to allocate certificate semaphore");
+        return;
+    }
 
     /* Pre-allocate PSRAM stacks so they're available when a session starts */
     s_loop_stack  = heap_caps_malloc(6144, MALLOC_CAP_SPIRAM);
@@ -453,7 +487,10 @@ void webrtc_cam_init(void)
     }
 
     /* Kick off cert pre-generation in background */
-    xTaskCreate(cert_pregen_task, "cert_pregen", 8192, NULL, 3, NULL);
+    if (xTaskCreate(cert_pregen_task, "cert_pregen", 8192, NULL, 3, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create certificate task");
+        xSemaphoreGive(s_cert_ready);
+    }
     ESP_LOGI(TAG, "WebRTC cam initialised (PSRAM stacks ready)");
     log_heap("WebRTC init");
 }
@@ -504,7 +541,11 @@ void webrtc_cam_start_from_json(const char *json)
     s_video_task = NULL;
 
     /* Spawn async task so spi_listener_task is never blocked */
-    xTaskCreate(cam_webrtc_task, "cam_webrtc", 8192, a, 4, NULL);
+    if (xTaskCreate(cam_webrtc_task, "cam_webrtc", 8192, a, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create WebRTC startup task");
+        free(a);
+        s_running = false;
+    }
 }
 
 void webrtc_cam_on_answer(const char *sdp_str, int len)
@@ -515,8 +556,12 @@ void webrtc_cam_on_answer(const char *sdp_str, int len)
         .data = (uint8_t *)sdp_str,
         .size = len,
     };
-    esp_peer_send_msg(s_peer, &msg);
-    ESP_LOGI(TAG, "SDP answer forwarded to esp_peer (%d bytes)", len);
+    int ret = esp_peer_send_msg(s_peer, &msg);
+    if (ret == ESP_PEER_ERR_NONE) {
+        ESP_LOGI(TAG, "SDP answer forwarded to esp_peer (%d bytes)", len);
+    } else {
+        ESP_LOGE(TAG, "Failed to forward SDP answer: %d", ret);
+    }
 }
 
 void webrtc_cam_on_ice(const char *cand_str, int len)
@@ -527,8 +572,10 @@ void webrtc_cam_on_ice(const char *cand_str, int len)
         .data = (uint8_t *)cand_str,
         .size = len,
     };
-    esp_peer_send_msg(s_peer, &msg);
-    ESP_LOGD(TAG, "ICE candidate forwarded to esp_peer");
+    int ret = esp_peer_send_msg(s_peer, &msg);
+    if (ret != ESP_PEER_ERR_NONE) {
+        ESP_LOGW(TAG, "Failed to forward ICE candidate: %d", ret);
+    }
 }
 
 void webrtc_cam_stop(void)
@@ -553,10 +600,7 @@ void webrtc_cam_stop(void)
     }
 
     /* Disconnect WiFi so it can reconnect on next session with fresh creds */
-    if (s_wifi_started) {
-        esp_wifi_disconnect();
-        esp_wifi_stop();
-    }
+    wifi_stop();
 
     s_stopping = false;
     ESP_LOGI(TAG, "WebRTC stopped");

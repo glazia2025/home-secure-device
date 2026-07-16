@@ -22,6 +22,10 @@ static const char *TAG = "HUB_WS";
 
 static esp_websocket_client_handle_t s_client;
 static bool s_started;
+static char *s_ws_message_buf;
+static size_t s_ws_message_expected;
+
+#define HUB_WS_MAX_TEXT_BYTES 8192
 
 static void log_tls_heap(const char *context)
 {
@@ -132,12 +136,6 @@ static void handle_viewer_gone(void)
     ESP_LOGI(TAG, "viewer-gone → cam_spi_webrtc_stop");
     cam_spi_webrtc_stop();
 }
-
-// static void handle_viewer_gone(void)
-// {
-//     ESP_LOGI(TAG, "viewer-gone → stopping WebRTC");
-//     webrtc_trigger_stop();
-// }
 
 static void handle_answer(cJSON *root)
 {
@@ -269,6 +267,37 @@ static void handle_ws_text(const char *data, int len)
     cJSON_Delete(root);
 }
 
+static void handle_ws_fragment(const esp_websocket_event_data_t *data)
+{
+    if (!data || !data->data_ptr || data->data_len <= 0 || !s_ws_message_buf) return;
+    if (data->op_code != 0x1 && data->op_code != 0x0) return;
+
+    size_t total = data->payload_len > 0 ? (size_t)data->payload_len : (size_t)data->data_len;
+    size_t offset = data->payload_offset >= 0 ? (size_t)data->payload_offset : 0;
+    if (offset == 0) {
+        s_ws_message_expected = total;
+        if (total > HUB_WS_MAX_TEXT_BYTES) {
+            ESP_LOGW(TAG, "Dropping oversized websocket text payload (%u bytes)", (unsigned)total);
+            s_ws_message_expected = 0;
+            return;
+        }
+    }
+    if (s_ws_message_expected == 0 || offset + (size_t)data->data_len > s_ws_message_expected ||
+        offset + (size_t)data->data_len > HUB_WS_MAX_TEXT_BYTES) {
+        ESP_LOGW(TAG, "Invalid websocket fragment offset=%u len=%d total=%u",
+                 (unsigned)offset, data->data_len, (unsigned)s_ws_message_expected);
+        s_ws_message_expected = 0;
+        return;
+    }
+
+    memcpy(s_ws_message_buf + offset, data->data_ptr, (size_t)data->data_len);
+    if (offset + (size_t)data->data_len == s_ws_message_expected) {
+        s_ws_message_buf[s_ws_message_expected] = '\0';
+        handle_ws_text(s_ws_message_buf, (int)s_ws_message_expected);
+        s_ws_message_expected = 0;
+    }
+}
+
 static void websocket_event_handler(void *handler_args,
                                     esp_event_base_t base,
                                     int32_t event_id,
@@ -292,9 +321,7 @@ static void websocket_event_handler(void *handler_args,
         ESP_LOGW(TAG, "Hub control websocket error");
         break;
     case WEBSOCKET_EVENT_DATA:
-        if (data && data->op_code == 0x1 && data->data_ptr && data->data_len > 0) {
-            handle_ws_text(data->data_ptr, data->data_len);
-        }
+        handle_ws_fragment(data);
         break;
     default:
         break;
@@ -312,6 +339,15 @@ esp_err_t hub_control_ws_start(void)
 
     esp_err_t err = door_lock_start(send_door_lock_ack);
     if (err != ESP_OK) return err;
+
+    if (!s_ws_message_buf) {
+        s_ws_message_buf = heap_caps_malloc(HUB_WS_MAX_TEXT_BYTES + 1, MALLOC_CAP_SPIRAM);
+        if (!s_ws_message_buf) {
+            ESP_LOGE(TAG, "Failed to allocate websocket assembly buffer in PSRAM");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    s_ws_message_expected = 0;
 
     static char uri[160];
     static char headers[384];
