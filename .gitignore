@@ -35,3 +35,6 @@
 .idea/
 .venv/
 venv/
+.cache/
+**/.cache/
+*.cache
