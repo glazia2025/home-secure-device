@@ -441,7 +441,7 @@ static void cam_webrtc_task(void *arg)
 void webrtc_cam_init(void)
 {
     /* esp_peer's INFO logs include TURN credentials; keep errors/warnings only. */
-    esp_log_level_set("AGENT", ESP_LOG_WARN);
+    esp_log_level_set("AGENT", ESP_LOG_INFO);
     s_cert_ready = xSemaphoreCreateBinary();
 
     /* Pre-allocate PSRAM stacks so they're available when a session starts */

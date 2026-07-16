@@ -133,11 +133,11 @@ static void handle_viewer_gone(void)
     cam_spi_webrtc_stop();
 }
 
-static void handle_viewer_gone(void)
-{
-    ESP_LOGI(TAG, "viewer-gone → stopping WebRTC");
-    webrtc_trigger_stop();
-}
+// static void handle_viewer_gone(void)
+// {
+//     ESP_LOGI(TAG, "viewer-gone → stopping WebRTC");
+//     webrtc_trigger_stop();
+// }
 
 static void handle_answer(cJSON *root)
 {
