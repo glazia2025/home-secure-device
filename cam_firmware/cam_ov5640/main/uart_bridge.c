@@ -1,11 +1,8 @@
 #include "uart_bridge.h"
 #include "webrtc_cam.h"
-#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_rom_gpio.h"
-#include "soc/gpio_sig_map.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -15,8 +12,7 @@ static const char *TAG = "UART_BRIDGE";
 
 /* ── Pins / port ──────────────────────────────────────────────────────────── */
 #define CAM_UART_NUM    UART_NUM_1
-#define CAM_UART_TX     2           /* current cam TX → hub RX wire */
-#define CAM_UART_TX_LEGACY 46       /* fixed former-MISO wire; mirrors UART TX */
+#define CAM_UART_TX     46          /* cam TX → hub GPIO11 RX */
 #define CAM_UART_RX     1           /* cam RX ← hub TX  (was MOSI) */
 #define CAM_UART_BAUD   115200
 #define CAM_UART_RX_BUF 4096        /* one max frame; avoids excess internal allocation */
@@ -153,11 +149,6 @@ void uart_bridge_start(void)
     ESP_ERROR_CHECK(uart_param_config(CAM_UART_NUM, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX,
                                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    /* Some assembled units still use the former SPI-MISO wire on GPIO46.
-     * The GPIO matrix can safely fan UART1 TX out to both board revisions. */
-    ESP_ERROR_CHECK(gpio_set_direction(CAM_UART_TX_LEGACY, GPIO_MODE_OUTPUT));
-    gpio_set_pull_mode(CAM_UART_TX_LEGACY, GPIO_FLOATING);
-    esp_rom_gpio_connect_out_signal(CAM_UART_TX_LEGACY, U1TXD_OUT_IDX, false, false);
     ESP_ERROR_CHECK(uart_driver_install(CAM_UART_NUM, CAM_UART_RX_BUF, 0, 0, NULL, 0));
     s_started = true;
 
@@ -176,9 +167,8 @@ void uart_bridge_start(void)
         return;
     }
 
-    ESP_LOGI(TAG, "UART bridge ready (UART%d TX=%d+%d RX=%d baud=%d)",
-             CAM_UART_NUM, CAM_UART_TX, CAM_UART_TX_LEGACY,
-             CAM_UART_RX, CAM_UART_BAUD);
+    ESP_LOGI(TAG, "UART bridge ready (UART%d TX=%d RX=%d baud=%d)",
+             CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX, CAM_UART_BAUD);
 }
 
 void uart_bridge_send_msg(uint8_t type, const char *payload, uint16_t len)
