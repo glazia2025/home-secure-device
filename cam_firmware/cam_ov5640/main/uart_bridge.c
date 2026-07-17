@@ -1,6 +1,7 @@
 #include "uart_bridge.h"
 #include "webrtc_cam.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -11,13 +12,32 @@ static const char *TAG = "UART_BRIDGE";
 
 /* ── Pins / port ──────────────────────────────────────────────────────────── */
 #define CAM_UART_NUM    UART_NUM_1
-#define CAM_UART_TX     2           /* cam TX → hub RX  (was MISO) */
+#define CAM_UART_TX     46          /* cam TX → hub RX; fixed former-MISO wire */
 #define CAM_UART_RX     1           /* cam RX ← hub TX  (was MOSI) */
 #define CAM_UART_BAUD   115200
-#define CAM_UART_RX_BUF 8192        /* ring buffer; comfortably holds >2 max frames */
+#define CAM_UART_RX_BUF 4096        /* one max frame; avoids excess internal allocation */
 
 /* ── Module state ─────────────────────────────────────────────────────────── */
 static bool s_started = false;
+static StackType_t *s_rx_stack = NULL;
+static StaticTask_t s_rx_tcb;
+
+static int uart_read_exact(uint8_t *buf, size_t len, TickType_t timeout)
+{
+    size_t received = 0;
+    TickType_t start = xTaskGetTickCount();
+
+    while (received < len) {
+        TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed >= timeout) break;
+
+        int got = uart_read_bytes(CAM_UART_NUM, buf + received, len - received,
+                                  timeout - elapsed);
+        if (got <= 0) break;
+        received += (size_t)got;
+    }
+    return (int)received;
+}
 
 /* ── Parse inbound bytes from hub and dispatch to webrtc_cam ─────────────── */
 static void dispatch_mosi(const uint8_t *buf, uint8_t type, uint16_t len)
@@ -79,7 +99,11 @@ static void uart_rx_task(void *arg)
         if (b != 0xCA) continue;
 
         /* Read type (1 byte) + length (2 bytes big-endian), 100 ms timeout */
-        if (uart_read_bytes(CAM_UART_NUM, hdr, 3, pdMS_TO_TICKS(100)) != 3) continue;
+        int hdr_got = uart_read_exact(hdr, sizeof(hdr), pdMS_TO_TICKS(250));
+        if (hdr_got != (int)sizeof(hdr)) {
+            ESP_LOGW(TAG, "RX: short header %d/%u", hdr_got, (unsigned)sizeof(hdr));
+            continue;
+        }
 
         uint8_t  type = hdr[0];
         uint16_t len  = ((uint16_t)hdr[1] << 8) | hdr[2];
@@ -96,7 +120,7 @@ static void uart_rx_task(void *arg)
         }
 
         if (len > 0) {
-            int got = uart_read_bytes(CAM_UART_NUM, buf, len, pdMS_TO_TICKS(200));
+            int got = uart_read_exact(buf, len, pdMS_TO_TICKS(1000));
             if (got != (int)len) {
                 ESP_LOGW(TAG, "RX: short read %d/%u for type 0x%02X — discarding", got, len, type);
                 free(buf);
@@ -128,7 +152,20 @@ void uart_bridge_start(void)
     ESP_ERROR_CHECK(uart_driver_install(CAM_UART_NUM, CAM_UART_RX_BUF, 0, 0, NULL, 0));
     s_started = true;
 
-    xTaskCreate(uart_rx_task, "uart_bridge_rx", 4096, NULL, 5, NULL);
+    s_rx_stack = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_rx_stack) {
+        ESP_LOGE(TAG, "Failed to allocate UART RX task stack in PSRAM");
+        s_started = false;
+        return;
+    }
+    TaskHandle_t rx_task = xTaskCreateStaticPinnedToCore(
+        uart_rx_task, "uart_bridge_rx", 4096, NULL, 5,
+        s_rx_stack, &s_rx_tcb, 0);
+    if (!rx_task) {
+        ESP_LOGE(TAG, "Failed to create UART RX task");
+        s_started = false;
+        return;
+    }
 
     ESP_LOGI(TAG, "UART bridge ready (UART%d TX=%d RX=%d baud=%d)",
              CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX, CAM_UART_BAUD);
@@ -144,7 +181,7 @@ void uart_bridge_send_msg(uint8_t type, const char *payload, uint16_t len)
     uint16_t capped = (len > CAM_UART_MAX_PL) ? CAM_UART_MAX_PL : len;
 
     /* Single contiguous buffer → single uart_write_bytes call (atomic on wire) */
-    uint8_t *frame = malloc(4 + capped);
+    uint8_t *frame = heap_caps_malloc(4 + capped, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!frame) {
         ESP_LOGE(TAG, "OOM sending type 0x%02X", type);
         return;

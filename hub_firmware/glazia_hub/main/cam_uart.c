@@ -3,6 +3,7 @@
 #include "state.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,7 +18,7 @@ static const char *TAG = "CAM_UART";
 #define CAM_UART_TX     12          /* hub TX → cam RX  (was MOSI) */
 #define CAM_UART_RX     11          /* hub RX ← cam TX  (was MISO) */
 #define CAM_UART_BAUD   115200
-#define CAM_UART_RX_BUF 8192        /* ring buffer; comfortably holds >2 max frames */
+#define CAM_UART_RX_BUF 4096        /* one max frame; limits scarce internal DMA heap */
 
 /* ── Outbound message (heap payload, freed by TX task after write) ─────────── */
 typedef struct {
@@ -30,6 +31,35 @@ typedef struct {
 static QueueHandle_t  s_tx_queue     = NULL;
 static volatile bool  s_streaming    = false;
 static char          *s_pending_offer = NULL;   /* cached offer JSON for WS retry */
+static StackType_t    *s_tx_stack = NULL;
+static StackType_t    *s_rx_stack = NULL;
+static StaticTask_t    s_tx_tcb;
+static StaticTask_t    s_rx_tcb;
+
+static int uart_read_exact(uint8_t *buf, size_t len, TickType_t timeout)
+{
+    size_t received = 0;
+    TickType_t start = xTaskGetTickCount();
+
+    while (received < len) {
+        TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed >= timeout) break;
+
+        int got = uart_read_bytes(CAM_UART_NUM, buf + received, len - received,
+                                  timeout - elapsed);
+        if (got <= 0) break;
+        received += (size_t)got;
+    }
+    return (int)received;
+}
+
+static char *psram_strdup(const char *src)
+{
+    size_t len = strlen(src) + 1;
+    char *copy = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (copy) memcpy(copy, src, len);
+    return copy;
+}
 
 /* ── TX task: dequeues messages and writes framed bytes to UART ───────────── */
 static void cam_uart_tx_task(void *arg)
@@ -40,7 +70,8 @@ static void cam_uart_tx_task(void *arg)
 
         /* Build one contiguous frame so uart_write_bytes is a single call
          * (ESP-IDF holds the tx mutex per call — one call = atomic on the wire). */
-        uint8_t *frame = malloc(4 + msg.payload_len);
+        uint8_t *frame = heap_caps_malloc(4 + msg.payload_len,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!frame) {
             ESP_LOGE(TAG, "TX OOM for type 0x%02X payload_len=%u", msg.type, msg.payload_len);
             free(msg.payload);
@@ -79,7 +110,11 @@ static void cam_uart_rx_task(void *arg)
         if (b != 0xCA) continue;
 
         /* Read type (1 byte) + length (2 bytes big-endian), 100 ms timeout */
-        if (uart_read_bytes(CAM_UART_NUM, hdr, 3, pdMS_TO_TICKS(100)) != 3) continue;
+        int hdr_got = uart_read_exact(hdr, sizeof(hdr), pdMS_TO_TICKS(250));
+        if (hdr_got != (int)sizeof(hdr)) {
+            ESP_LOGW(TAG, "RX: short header %d/%u", hdr_got, (unsigned)sizeof(hdr));
+            continue;
+        }
 
         uint8_t  type = hdr[0];
         uint16_t len  = ((uint16_t)hdr[1] << 8) | hdr[2];
@@ -90,15 +125,14 @@ static void cam_uart_rx_task(void *arg)
             continue;
         }
 
-        char *payload = malloc(len + 1);
+        char *payload = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!payload) {
             ESP_LOGE(TAG, "RX OOM for type 0x%02X len=%u", type, len);
             continue;
         }
 
         if (len > 0) {
-            int got = uart_read_bytes(CAM_UART_NUM, (uint8_t *)payload, len,
-                                      pdMS_TO_TICKS(200));
+            int got = uart_read_exact((uint8_t *)payload, len, pdMS_TO_TICKS(1000));
             if (got != (int)len) {
                 ESP_LOGW(TAG, "RX: short read %d/%u for type 0x%02X — discarding", got, len, type);
                 free(payload);
@@ -111,7 +145,10 @@ static void cam_uart_rx_task(void *arg)
         case CAM_MSG_OFFER:
             ESP_LOGI(TAG, "RX: offer from cam_esp (%u bytes) — forwarding to server", len);
             free(s_pending_offer);
-            s_pending_offer = strdup(payload);   /* cache for WS reconnect retry */
+            s_pending_offer = psram_strdup(payload);   /* cache for WS reconnect retry */
+            if (!s_pending_offer) {
+                ESP_LOGW(TAG, "Could not cache offer in PSRAM; forwarding current offer only");
+            }
             hub_control_ws_send_json(payload);
             break;
         case CAM_MSG_ICE_FROM_CAM:
@@ -138,7 +175,8 @@ static void enqueue(uint8_t type, const char *payload, uint16_t len)
     cam_msg_t msg = {.type = type, .payload_len = 0, .payload = NULL};
     if (len > 0 && payload) {
         uint16_t capped = (len > CAM_UART_MAX_PL) ? CAM_UART_MAX_PL : len;
-        msg.payload = malloc(capped + 1);
+        msg.payload = heap_caps_malloc(capped + 1,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!msg.payload) {
             ESP_LOGE(TAG, "OOM queueing cam UART msg type 0x%02X", type);
             return;
@@ -186,13 +224,29 @@ void cam_uart_init(void)
         return;
     }
 
-    /* TX task: small stack — just queue receive + malloc + uart_write */
-    xTaskCreatePinnedToCore(cam_uart_tx_task, "cam_uart_tx", 3072, NULL, 5, NULL, 0);
-    /* RX task: larger stack — malloc for payloads up to CAM_UART_MAX_PL bytes */
-    xTaskCreatePinnedToCore(cam_uart_rx_task, "cam_uart_rx", 4096, NULL, 5, NULL, 0);
+    /* Keep long-lived IPC task stacks out of scarce internal SRAM. */
+    s_tx_stack = heap_caps_malloc(3072, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_rx_stack = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_tx_stack || !s_rx_stack) {
+        ESP_LOGE(TAG, "Failed to allocate UART task stacks in PSRAM");
+        return;
+    }
 
-    ESP_LOGI(TAG, "UART IPC ready (UART%d TX=%d RX=%d baud=%d)",
-             CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX, CAM_UART_BAUD);
+    TaskHandle_t tx_task = xTaskCreateStaticPinnedToCore(
+        cam_uart_tx_task, "cam_uart_tx", 3072, NULL, 5,
+        s_tx_stack, &s_tx_tcb, 0);
+    TaskHandle_t rx_task = xTaskCreateStaticPinnedToCore(
+        cam_uart_rx_task, "cam_uart_rx", 4096, NULL, 5,
+        s_rx_stack, &s_rx_tcb, 0);
+    if (!tx_task || !rx_task) {
+        ESP_LOGE(TAG, "Failed to create UART IPC tasks");
+        return;
+    }
+
+    ESP_LOGI(TAG, "UART IPC ready (UART%d TX=%d RX=%d baud=%d internal_free=%u largest=%u)",
+             CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX, CAM_UART_BAUD,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 void cam_uart_webrtc_start(const char *ssid, const char *pass,
