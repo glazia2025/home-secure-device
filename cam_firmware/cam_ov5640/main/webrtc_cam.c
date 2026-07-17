@@ -319,7 +319,7 @@ static int on_state_cb(esp_peer_state_t state, void *ctx)
         if (s_running && s_video_task == NULL && s_video_stack) {
             s_video_task = xTaskCreateStaticPinnedToCore(
                 video_task_fn, "cam_video",
-                8192, NULL, 4,
+                24576, NULL, 4,
                 s_video_stack, &s_video_tcb, 1);
             if (!s_video_task) {
                 ESP_LOGE(TAG, "Failed to create video task");
@@ -538,7 +538,7 @@ static void cam_webrtc_task(void *arg)
     /* Start the main-loop task */
     s_loop_task = xTaskCreateStaticPinnedToCore(
         loop_task_fn, "cam_peer_loop",
-        6144, NULL, 5,
+        16384, NULL, 5,
         s_loop_stack, &s_loop_tcb, 0);
     if (!s_loop_task) {
         ESP_LOGE(TAG, "Failed to create peer loop task");
@@ -579,8 +579,8 @@ void webrtc_cam_init(void)
     }
 
     /* Pre-allocate PSRAM stacks so they're available when a session starts */
-    s_loop_stack  = heap_caps_malloc(6144, MALLOC_CAP_SPIRAM);
-    s_video_stack = heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    s_loop_stack  = heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
+    s_video_stack = heap_caps_malloc(24576, MALLOC_CAP_SPIRAM);
     if (!s_loop_stack || !s_video_stack) {
         ESP_LOGE(TAG, "PSRAM stack alloc failed — WebRTC unavailable");
         return;
