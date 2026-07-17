@@ -17,7 +17,7 @@ static const char *TAG = "CAM_UART";
 /* ── Pins / port ──────────────────────────────────────────────────────────── */
 #define CAM_UART_NUM    UART_NUM_1
 #define CAM_UART_TX     12          /* hub TX → cam RX  (was MOSI) */
-#define CAM_UART_RX     11          /* hub RX ← cam TX  (was MISO) */
+#define CAM_UART_RX     8         /* hub RX ← cam TX  (was MISO) */
 #define CAM_UART_BAUD   115200
 #define CAM_UART_RX_BUF 4096        /* one max frame; limits scarce internal DMA heap */
 
@@ -61,6 +61,8 @@ static char *psram_strdup(const char *src)
     if (copy) memcpy(copy, src, len);
     return copy;
 }
+
+static void enqueue(uint8_t type, const char *payload, uint16_t len);
 
 /* ── TX task: dequeues messages and writes framed bytes to UART ───────────── */
 static void cam_uart_tx_task(void *arg)

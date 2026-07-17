@@ -15,3 +15,4 @@ void webrtc_cam_on_ice(const char *cand_str, int len);
 
 /* Called by spi_bridge when CAM_MSG_STOP is received, or on WS disconnect. */
 void webrtc_cam_stop(void);
+

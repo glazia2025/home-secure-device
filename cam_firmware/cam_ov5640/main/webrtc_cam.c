@@ -176,7 +176,7 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
         cJSON_Delete(root);
         if (json) {
             uart_bridge_send_msg(CAM_MSG_OFFER, json, (uint16_t)strlen(json));
-            ESP_LOGI(TAG, "SDP offer queued (%d raw bytes, %u JSON bytes)",
+            ESP_LOGI(TAG, "SDP offer sent (%d raw bytes, %u JSON bytes)",
                      msg->size, (unsigned)strlen(json));
             free(json);
         }

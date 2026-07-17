@@ -13,7 +13,7 @@ static const char *TAG = "UART_BRIDGE";
 
 /* ── Pins / port ──────────────────────────────────────────────────────────── */
 #define CAM_UART_NUM    UART_NUM_1
-#define CAM_UART_TX     46          /* cam TX → hub GPIO11 RX */
+#define CAM_UART_TX     21          /* cam TX → hub GPIO8 RX */
 #define CAM_UART_RX     1           /* cam RX ← hub TX  (was MOSI) */
 #define CAM_UART_BAUD   115200
 #define CAM_UART_RX_BUF 4096        /* one max frame; avoids excess internal allocation */
@@ -97,7 +97,6 @@ static void uart_rx_task(void *arg)
     while (1) {
         /* Seek magic byte — silently discards noise or partial frames */
         if (uart_read_bytes(CAM_UART_NUM, &b, 1, pdMS_TO_TICKS(2000)) != 1) {
-            uart_bridge_send_msg(CAM_MSG_LINK_TEST, NULL, 0);
             continue;
         }
         if (b != 0xCA) continue;
