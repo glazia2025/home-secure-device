@@ -150,6 +150,7 @@ static void handle_answer(cJSON *root)
         ESP_LOGW(TAG, "answer: missing sdp.sdp string");
         return;
     }
+    ESP_LOGI(TAG, "answer SDP preview: %.400s", sdp_str->valuestring);
     cam_uart_relay_answer(sdp_str->valuestring);
 }
 
@@ -261,6 +262,8 @@ static void handle_ws_text(const char *data, int len)
             cJSON *error = cJSON_GetObjectItem(root, "error");
             ESP_LOGW(TAG, "Server websocket error: %s",
                      cJSON_IsString(error) ? error->valuestring : "unknown");
+        } else {
+            ESP_LOGW(TAG, "WS: unhandled type '%s' (raw len=%d)", type->valuestring, len);
         }
     }
 

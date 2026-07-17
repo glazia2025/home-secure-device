@@ -312,7 +312,9 @@ void cam_uart_webrtc_stop(void)
 void cam_uart_relay_answer(const char *sdp_str)
 {
     if (!sdp_str) return;
-    ESP_LOGI(TAG, "Relaying SDP answer to cam_esp (%u bytes)", (unsigned)strlen(sdp_str));
+    bool has_cands = strstr(sdp_str, "a=candidate:") != NULL;
+    ESP_LOGI(TAG, "Relaying SDP answer (%u bytes) — %s embedded ICE candidates",
+             (unsigned)strlen(sdp_str), has_cands ? "HAS" : "NO");
     enqueue(CAM_MSG_ANSWER, sdp_str, (uint16_t)strlen(sdp_str));
 }
 

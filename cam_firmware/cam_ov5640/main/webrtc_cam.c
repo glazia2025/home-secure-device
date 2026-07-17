@@ -165,8 +165,101 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
         memcpy(sdp, data, msg->size);
         sdp[msg->size] = '\0';
 
-        cJSON *root     = cJSON_CreateObject();
-        cJSON *sdp_obj  = cJSON_CreateObject();
+        /* Patch 1: replace non-standard msid-semantic "esp-webrtc" with "WMS".
+         * RFC 8830: browsers ignore a=msid: lines with unrecognised semantics,
+         * causing Unified Plan to reject the video m-section. */
+        {
+            char *sem = strstr(sdp, "a=msid-semantic: esp-webrtc");
+            if (sem) {
+                char *tok = sem + strlen("a=msid-semantic: ");
+                size_t old_len = strlen("esp-webrtc");
+                size_t new_len = strlen("WMS");
+                size_t tail    = strlen(tok + old_len) + 1;
+                memmove(tok + new_len, tok + old_len, tail);
+                memcpy(tok, "WMS", new_len);
+                ESP_LOGI(TAG, "SDP patched: esp-webrtc -> WMS");
+            }
+        }
+
+        /* Patch 2: strip a=ssrc:... msid:... lines (Plan-B artifact).
+         * flutter_webrtc in Unified Plan mode detects SSRC-level msid as
+         * Plan-B signalling and rejects the m-section on plan mismatch.
+         * Keep a=ssrc:... cname:... lines — RTCP needs them. */
+        {
+            char *p = sdp;
+            while ((p = strstr(p, "\na=ssrc:")) != NULL) {
+                char *line_end = strchr(p + 1, '\n');
+                if (!line_end) break;
+                char *msid_pos = strstr(p + 1, " msid:");
+                if (msid_pos && msid_pos < line_end) {
+                    memmove(p, line_end, strlen(line_end) + 1);
+                    /* do not advance p; next char is now what was after line_end */
+                } else {
+                    p = line_end;
+                }
+            }
+        }
+
+        /* Patch 3: move misplaced c= line to immediately after m=video line.
+         * RFC 4566 §5 grammar: c= must precede a= lines in an m-section.
+         * esp_peer places c= after ~14 a= lines; libwebrtc may fail to
+         * associate ice-ufrag/ice-pwd/fingerprint with the video track,
+         * causing the browser to reject the m-section (m=video 0 SAVPF 0). */
+        {
+            char *mv = strstr(sdp, "m=video");
+            if (mv) {
+                char *mv_end = strchr(mv, '\n');          /* \n ending m=video line */
+                if (mv_end) {
+                    char *cv     = strstr(mv_end + 1, "\nc="); /* \n before c= line */
+                    char *cv_end = cv ? strchr(cv + 1, '\n') : NULL; /* \n ending c= line */
+                    if (cv && cv_end) {
+                        /* c= content (without the leading \n): cv+1 .. cv_end inclusive */
+                        size_t c_len     = (size_t)(cv_end - cv);   /* includes trailing \n */
+                        /* intermediate block (codec a= lines): mv_end+1 .. cv inclusive */
+                        size_t inter_len = (size_t)(cv - mv_end);   /* includes \n of last line */
+                        if (c_len > 0 && c_len <= 64 && inter_len > 0) {
+                            char c_buf[64];
+                            memcpy(c_buf, cv + 1, c_len);
+                            /* Shift intermediate right — overwrites c= in place, already saved */
+                            memmove(mv_end + 1 + c_len, mv_end + 1, inter_len);
+                            /* Place c= immediately after m=video line */
+                            memcpy(mv_end + 1, c_buf, c_len);
+                            ESP_LOGI(TAG, "SDP patched: c= moved to after m=video");
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Patch 4: change a=sendonly to a=sendrecv.
+         * flutter_webrtc (Unified Plan) does not auto-create a recvonly transceiver
+         * for an incoming sendonly offer, so Chrome answers m=video 0 (rejected).
+         * sendrecv prompts Chrome to create a bidirectional transceiver; it answers
+         * with a valid port and sends ICE candidates. esp_peer (SEND_ONLY) ignores
+         * any incoming video Chrome may send. Same 8-byte length — in-place memcpy. */
+        {
+            char *so = strstr(sdp, "\na=sendonly");
+            if (so) {
+                memcpy(so + 3, "sendrecv", 8); /* \na=sendonly → \na=sendrecv (same length) */
+                ESP_LOGI(TAG, "SDP patched: sendonly -> sendrecv");
+            }
+        }
+
+        /* Log full patched SDP in 400-char chunks for verification */
+        {
+            const char *ptr = sdp;
+            int remaining = (int)strlen(sdp);
+            int chunk = 0;
+            while (remaining > 0) {
+                int take = remaining > 400 ? 400 : remaining;
+                ESP_LOGI(TAG, "SDP offer [%d]: %.*s", chunk++, take, ptr);
+                ptr += take;
+                remaining -= take;
+            }
+        }
+
+        cJSON *root    = cJSON_CreateObject();
+        cJSON *sdp_obj = cJSON_CreateObject();
         cJSON_AddStringToObject(root,    "type", "offer");
         cJSON_AddStringToObject(sdp_obj, "type", "offer");
         cJSON_AddStringToObject(sdp_obj, "sdp",  sdp);
@@ -200,7 +293,8 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
         cJSON_Delete(root);
         if (json) {
             uart_bridge_send_msg(CAM_MSG_ICE_FROM_CAM, json, (uint16_t)strlen(json));
-            ESP_LOGD(TAG, "ICE candidate queued");
+            ESP_LOGI(TAG, "Local ICE candidate → hub (%u bytes): %.80s",
+                     (unsigned)strlen(json), json);
             free(json);
         }
     }
@@ -568,6 +662,7 @@ void webrtc_cam_on_answer(const char *sdp_str, int len)
 void webrtc_cam_on_ice(const char *cand_str, int len)
 {
     if (!s_peer) { ESP_LOGW(TAG, "on_ice: no peer"); return; }
+    ESP_LOGI(TAG, "Remote ICE candidate from hub (%d bytes): %.80s", len, cand_str);
     esp_peer_msg_t msg = {
         .type = ESP_PEER_MSG_TYPE_CANDIDATE,
         .data = (uint8_t *)cand_str,
