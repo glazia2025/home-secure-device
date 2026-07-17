@@ -10,6 +10,7 @@
 #define CAM_MSG_ANSWER         0x04  /* hub→cam: raw SDP string */
 #define CAM_MSG_ICE_FROM_CAM   0x05  /* cam→hub: JSON {"type":"ice-candidate",...} */
 #define CAM_MSG_ICE_TO_CAM     0x06  /* hub→cam: raw ICE candidate string */
+#define CAM_MSG_LINK_TEST      0x07  /* cam→hub: periodic UART health probe */
 
 #define CAM_UART_MAX_PL        4092  /* max payload per frame */
 

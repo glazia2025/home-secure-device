@@ -1,6 +1,7 @@
 #include "cam_uart.h"
 #include "hub_control_ws.h"
 #include "state.h"
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -110,7 +111,8 @@ static void cam_uart_rx_task(void *arg)
         /* Seek magic byte. Report sampled noise so wiring/baud faults are visible. */
         if (uart_read_bytes(CAM_UART_NUM, &b, 1, pdMS_TO_TICKS(2000)) != 1) {
             if (s_streaming) {
-                ESP_LOGW(TAG, "RX: no bytes from camera while waiting for signaling");
+                ESP_LOGW(TAG, "RX: no bytes from camera while waiting for signaling (GPIO%d level=%d)",
+                         CAM_UART_RX, gpio_get_level(CAM_UART_RX));
             }
             continue;
         }
@@ -171,6 +173,10 @@ static void cam_uart_rx_task(void *arg)
         case CAM_MSG_ICE_FROM_CAM:
             ESP_LOGI(TAG, "RX: ICE candidate from cam_esp (%u bytes) — forwarding to server", len);
             hub_control_ws_send_json(payload);
+            break;
+        case CAM_MSG_LINK_TEST:
+            ESP_LOGI(TAG, "RX: camera UART link test OK (GPIO%d level=%d)",
+                     CAM_UART_RX, gpio_get_level(CAM_UART_RX));
             break;
         default:
             ESP_LOGW(TAG, "RX: unknown type 0x%02X len=%u — ignoring", type, len);
@@ -233,6 +239,7 @@ void cam_uart_init(void)
     ESP_ERROR_CHECK(uart_param_config(CAM_UART_NUM, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX,
                                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(gpio_set_pull_mode(CAM_UART_RX, GPIO_PULLUP_ONLY));
     ESP_ERROR_CHECK(uart_driver_install(CAM_UART_NUM, CAM_UART_RX_BUF, 0, 0, NULL, 0));
 
     s_tx_queue = xQueueCreate(4, sizeof(cam_msg_t));

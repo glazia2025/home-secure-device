@@ -1,5 +1,6 @@
 #include "uart_bridge.h"
 #include "webrtc_cam.h"
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -95,7 +96,10 @@ static void uart_rx_task(void *arg)
 
     while (1) {
         /* Seek magic byte — silently discards noise or partial frames */
-        if (uart_read_bytes(CAM_UART_NUM, &b, 1, portMAX_DELAY) != 1) continue;
+        if (uart_read_bytes(CAM_UART_NUM, &b, 1, pdMS_TO_TICKS(2000)) != 1) {
+            uart_bridge_send_msg(CAM_MSG_LINK_TEST, NULL, 0);
+            continue;
+        }
         if (b != 0xCA) continue;
 
         /* Read type (1 byte) + length (2 bytes big-endian), 100 ms timeout */
@@ -147,6 +151,8 @@ void uart_bridge_start(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
     ESP_ERROR_CHECK(uart_param_config(CAM_UART_NUM, &cfg));
+    ESP_ERROR_CHECK(gpio_set_drive_capability(CAM_UART_TX, GPIO_DRIVE_CAP_3));
+    ESP_ERROR_CHECK(gpio_set_pull_mode(CAM_UART_TX, GPIO_FLOATING));
     ESP_ERROR_CHECK(uart_set_pin(CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX,
                                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(CAM_UART_NUM, CAM_UART_RX_BUF, 0, 0, NULL, 0));
@@ -167,8 +173,9 @@ void uart_bridge_start(void)
         return;
     }
 
-    ESP_LOGI(TAG, "UART bridge ready (UART%d TX=%d RX=%d baud=%d)",
-             CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX, CAM_UART_BAUD);
+    ESP_LOGI(TAG, "UART bridge ready (UART%d TX=%d RX=%d baud=%d tx_level=%d)",
+             CAM_UART_NUM, CAM_UART_TX, CAM_UART_RX, CAM_UART_BAUD,
+             gpio_get_level(CAM_UART_TX));
 }
 
 void uart_bridge_send_msg(uint8_t type, const char *payload, uint16_t len)
