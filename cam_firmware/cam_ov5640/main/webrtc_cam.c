@@ -231,18 +231,23 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
             }
         }
 
-        /* Patch 4: change a=sendonly to a=sendrecv.
-         * flutter_webrtc (Unified Plan) does not auto-create a recvonly transceiver
-         * for an incoming sendonly offer, so Chrome answers m=video 0 (rejected).
-         * sendrecv prompts Chrome to create a bidirectional transceiver; it answers
-         * with a valid port and sends ICE candidates. esp_peer (SEND_ONLY) ignores
-         * any incoming video Chrome may send. Same 8-byte length — in-place memcpy. */
+        /* Patch 4: esp_peer advertises H.264 Main profile (4d001f), but the
+         * ESP32-S3 software encoder produces Baseline-compatible H.264 and
+         * libwebrtc mobile commonly has no matching Main-profile receive codec.
+         * With no codec intersection the answer correctly rejects the section as
+         * "m=video 0 ... 0". Advertise constrained Baseline level 3.1 instead. */
         {
-            char *so = strstr(sdp, "\na=sendonly");
-            if (so) {
-                memcpy(so + 3, "sendrecv", 8); /* \na=sendonly → \na=sendrecv (same length) */
-                ESP_LOGI(TAG, "SDP patched: sendonly -> sendrecv");
+            const char *main_profile = "profile-level-id=4d001f";
+            const char *baseline_profile = "profile-level-id=42e01f";
+            char *profile = sdp;
+            int replacements = 0;
+            while ((profile = strstr(profile, main_profile)) != NULL) {
+                memcpy(profile, baseline_profile, strlen(baseline_profile));
+                profile += strlen(baseline_profile);
+                replacements++;
             }
+            ESP_LOGI(TAG, "SDP patched: H264 Main -> constrained Baseline (%d fmtp lines)",
+                     replacements);
         }
 
         /* Log full patched SDP in 400-char chunks for verification */
