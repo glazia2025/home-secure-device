@@ -2,7 +2,7 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "spi_bridge.h"
+#include "uart_bridge.h"
 #include "webrtc_cam.h"
 
 static const char *TAG = "CAM_MAIN";
@@ -24,7 +24,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
 
     webrtc_cam_init();
-    spi_bridge_start();
+    uart_bridge_start();
 
-    ESP_LOGI(TAG, "Boot complete. Waiting for Hub commands over SPI...");
+    ESP_LOGI(TAG, "Boot complete. Waiting for Hub commands over UART...");
 }

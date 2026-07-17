@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
-        "spi_bridge.c"
+        "uart_bridge.c"
         "camera_core.c"
         "webrtc_cam.c"
     INCLUDE_DIRS "."

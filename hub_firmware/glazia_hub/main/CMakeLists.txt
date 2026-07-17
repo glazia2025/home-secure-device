@@ -13,7 +13,7 @@ idf_component_register(
         "hub_sensor.c"
         "aqi_sensor.c"
         "hub_control_ws.c"
-        "cam_spi.c"
+        "cam_uart.c"
         "fingerprint.c"
         "nvs_storage.c"
         ${UI_SRCS}

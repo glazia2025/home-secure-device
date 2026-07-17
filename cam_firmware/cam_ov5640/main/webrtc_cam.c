@@ -1,5 +1,5 @@
 #include "webrtc_cam.h"
-#include "spi_bridge.h"
+#include "uart_bridge.h"
 #include "camera_core.h"
 
 #include "esp_log.h"
@@ -174,7 +174,7 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
         char *json = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
         if (json) {
-            spi_bridge_queue_msg(CAM_MSG_OFFER, json, (uint16_t)strlen(json));
+            uart_bridge_send_msg(CAM_MSG_OFFER, json, (uint16_t)strlen(json));
             ESP_LOGI(TAG, "SDP offer queued (%d raw bytes, %u JSON bytes)",
                      msg->size, (unsigned)strlen(json));
             free(json);
@@ -198,7 +198,7 @@ static int on_msg_cb(esp_peer_msg_t *msg, void *ctx)
         char *json = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
         if (json) {
-            spi_bridge_queue_msg(CAM_MSG_ICE_FROM_CAM, json, (uint16_t)strlen(json));
+            uart_bridge_send_msg(CAM_MSG_ICE_FROM_CAM, json, (uint16_t)strlen(json));
             ESP_LOGD(TAG, "ICE candidate queued");
             free(json);
         }

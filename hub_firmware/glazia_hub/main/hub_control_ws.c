@@ -16,7 +16,7 @@
 #include "freertos/task.h"
 #include "nvs_storage.h"
 #include "state.h"
-#include "cam_spi.h"
+#include "cam_uart.h"
 
 static const char *TAG = "HUB_WS";
 
@@ -127,14 +127,14 @@ static void handle_door_lock_command(cJSON *root)
 
 static void handle_viewer_ready(void)
 {
-    ESP_LOGI(TAG, "viewer-ready → cam_spi_webrtc_start");
-    cam_spi_webrtc_start(g_wifi_ssid, g_wifi_password, g_turn_user, g_turn_psw);
+    ESP_LOGI(TAG, "viewer-ready → cam_uart_webrtc_start");
+    cam_uart_webrtc_start(g_wifi_ssid, g_wifi_password, g_turn_user, g_turn_psw);
 }
 
 static void handle_viewer_gone(void)
 {
-    ESP_LOGI(TAG, "viewer-gone → cam_spi_webrtc_stop");
-    cam_spi_webrtc_stop();
+    ESP_LOGI(TAG, "viewer-gone → cam_uart_webrtc_stop");
+    cam_uart_webrtc_stop();
 }
 
 static void handle_answer(cJSON *root)
@@ -150,7 +150,7 @@ static void handle_answer(cJSON *root)
         ESP_LOGW(TAG, "answer: missing sdp.sdp string");
         return;
     }
-    cam_spi_relay_answer(sdp_str->valuestring);
+    cam_uart_relay_answer(sdp_str->valuestring);
 }
 
 static void handle_ice_candidate(cJSON *root)
@@ -167,7 +167,7 @@ static void handle_ice_candidate(cJSON *root)
         return;
     }
     ESP_LOGI(TAG, "Relaying ICE candidate to cam_esp: %.80s", cand_str->valuestring);
-    cam_spi_relay_ice_to_cam(cand_str->valuestring);
+    cam_uart_relay_ice_to_cam(cand_str->valuestring);
 }
 
 static void handle_sensor_delete_command(cJSON *root)
@@ -311,11 +311,11 @@ static void websocket_event_handler(void *handler_args,
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "Connected to hub control websocket");
         log_tls_heap("WSS connected");
-        cam_spi_resend_pending_offer();
+        cam_uart_resend_pending_offer();
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
-        cam_spi_webrtc_stop();
+        cam_uart_webrtc_stop();
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGW(TAG, "Hub control websocket error");
