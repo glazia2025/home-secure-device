@@ -103,11 +103,28 @@ static void cam_uart_rx_task(void *arg)
 {
     uint8_t b;
     uint8_t hdr[3];
+    unsigned noise_bytes = 0;
+    TickType_t last_noise_log = 0;
 
     while (1) {
-        /* Seek magic byte — silently drops noise or partial frames */
-        if (uart_read_bytes(CAM_UART_NUM, &b, 1, portMAX_DELAY) != 1) continue;
-        if (b != 0xCA) continue;
+        /* Seek magic byte. Report sampled noise so wiring/baud faults are visible. */
+        if (uart_read_bytes(CAM_UART_NUM, &b, 1, pdMS_TO_TICKS(2000)) != 1) {
+            if (s_streaming) {
+                ESP_LOGW(TAG, "RX: no bytes from camera while waiting for signaling");
+            }
+            continue;
+        }
+        if (b != 0xCA) {
+            noise_bytes++;
+            TickType_t now = xTaskGetTickCount();
+            if (now - last_noise_log >= pdMS_TO_TICKS(1000)) {
+                ESP_LOGW(TAG, "RX: discarded %u noise byte(s), latest=0x%02X",
+                         noise_bytes, b);
+                noise_bytes = 0;
+                last_noise_log = now;
+            }
+            continue;
+        }
 
         /* Read type (1 byte) + length (2 bytes big-endian), 100 ms timeout */
         int hdr_got = uart_read_exact(hdr, sizeof(hdr), pdMS_TO_TICKS(250));
