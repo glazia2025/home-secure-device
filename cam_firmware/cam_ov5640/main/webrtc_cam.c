@@ -23,10 +23,10 @@
 static const char *TAG = "WEBRTC_CAM";
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
-#define VIDEO_WIDTH    320
-#define VIDEO_HEIGHT   240
-#define VIDEO_FPS      10
-#define VIDEO_BITRATE  512000
+#define VIDEO_WIDTH    640
+#define VIDEO_HEIGHT   480
+#define VIDEO_FPS      30
+#define VIDEO_BITRATE  800000
 
 /* H264 output buffer: worst-case raw frame size (2 bytes/px for YUV422) */
 #define H264_OUT_BUF_SIZE  (VIDEO_WIDTH * VIDEO_HEIGHT * 2)
@@ -319,7 +319,7 @@ static int on_state_cb(esp_peer_state_t state, void *ctx)
         if (s_running && s_video_task == NULL && s_video_stack) {
             s_video_task = xTaskCreateStaticPinnedToCore(
                 video_task_fn, "cam_video",
-                24576, NULL, 4,
+                32768, NULL, 4,
                 s_video_stack, &s_video_tcb, 1);
             if (!s_video_task) {
                 ESP_LOGE(TAG, "Failed to create video task");
@@ -580,7 +580,7 @@ void webrtc_cam_init(void)
 
     /* Pre-allocate PSRAM stacks so they're available when a session starts */
     s_loop_stack  = heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
-    s_video_stack = heap_caps_malloc(24576, MALLOC_CAP_SPIRAM);
+    s_video_stack = heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
     if (!s_loop_stack || !s_video_stack) {
         ESP_LOGE(TAG, "PSRAM stack alloc failed — WebRTC unavailable");
         return;

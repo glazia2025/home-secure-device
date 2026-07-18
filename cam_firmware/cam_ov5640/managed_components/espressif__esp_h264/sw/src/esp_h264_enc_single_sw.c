@@ -221,7 +221,7 @@ esp_h264_err_t esp_h264_enc_sw_new(const esp_h264_enc_cfg_sw_t *cfg, esp_h264_en
         goto __exit__;
     }
     if (sw_hd->pic_type != ESP_H264_RAW_FMT_I420) {
-        sw_hd->yuv_cache = (uint8_t *)esp_h264_calloc_prefer(16, cfg->res.height * cfg->res.width * 1.5, &actual_size, ESP_H264_MEM_SPIRAM, ESP_H264_MEM_INTERNAL);
+        sw_hd->yuv_cache = (uint8_t *)esp_h264_calloc_prefer(1, cfg->res.height * cfg->res.width * 1.5, &actual_size, ESP_H264_MEM_SPIRAM, ESP_H264_MEM_INTERNAL);
         ESP_H264_GOTO_ON_FALSE(sw_hd->yuv_cache, ESP_H264_ERR_MEM, __exit__, TAG, "No memory for yuv cache");
         sw_hd->cc = yuyv2iyuv;
 #ifdef HAVE_ESP32S3

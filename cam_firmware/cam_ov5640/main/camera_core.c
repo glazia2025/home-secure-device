@@ -1,5 +1,6 @@
 #include "camera_core.h"
 #include "esp_log.h"
+#include "sensor.h"
 #include <string.h>
 
 static const char *TAG = "CAM_CORE";
@@ -52,8 +53,8 @@ esp_err_t camera_core_init(void)
         .ledc_timer   = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
 
-        .pixel_format = PIXFORMAT_JPEG, 
-        .frame_size   = FRAMESIZE_QVGA, 
+        .pixel_format = PIXFORMAT_JPEG,
+        .frame_size   = FRAMESIZE_QVGA,
         .jpeg_quality = 40,
         .fb_count     = 2,              // 2 buffers
         .fb_location  = CAMERA_FB_IN_PSRAM, // Safe because bus is empty!
@@ -101,7 +102,7 @@ esp_err_t camera_core_init_webrtc(void)
         .ledc_channel = LEDC_CHANNEL_0,
 
         .pixel_format = PIXFORMAT_YUV422,
-        .frame_size   = FRAMESIZE_QVGA,
+        .frame_size   = FRAMESIZE_VGA,
         .jpeg_quality = 0,
         .fb_count     = 2,
         .fb_location  = CAMERA_FB_IN_PSRAM,
@@ -115,7 +116,7 @@ esp_err_t camera_core_init_webrtc(void)
     }
 
     s_is_initialized = true;
-    ESP_LOGI(TAG, "Camera initialised for WebRTC (YUYV QVGA PSRAM)");
+    ESP_LOGI(TAG, "Camera initialised for WebRTC (YUYV VGA PSRAM)");
     return ESP_OK;
 }
 
