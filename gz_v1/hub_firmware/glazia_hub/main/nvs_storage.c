@@ -5,9 +5,10 @@
 #include "esp_log.h"
 #include <string.h>
 
-static const char *TAG       = "NVS";
-static const char *NVS_NS    = "glazia";       // main namespace
-static const char *NVS_PROV  = "glazia_prov";  // provisional namespace
+static const char *TAG        = "NVS";
+static const char *NVS_NS     = "glazia";       // main namespace
+static const char *NVS_PROV   = "glazia_prov";  // provisional namespace
+static const char *NVS_THREAD = "glz_thread";   // Thread sensor namespace
 
 // ── Main namespace ─────────────────────────────────────────────────────────
 
@@ -351,4 +352,67 @@ void nvs_prov_clear(void)
         nvs_close(h);
         ESP_LOGI(TAG, "Provisional NVS cleared");
     }
+}
+
+// ── Thread sensor namespace ────────────────────────────────────────────────
+
+void nvs_save_thread_sensors(const uint8_t eui64s[][8], const char names[][32],
+                              const char zones[][32], int count)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_THREAD, NVS_READWRITE, &h) != ESP_OK) return;
+
+    nvs_set_u8(h, "th_cnt", (uint8_t)count);
+    for (int i = 0; i < count; i++) {
+        char eui_key[16], name_key[16], zone_key[16];
+        snprintf(eui_key,  sizeof(eui_key),  "th_eui64_%d", (uint8_t)i);
+        snprintf(name_key, sizeof(name_key), "th_name_%d",  (uint8_t)i);
+        snprintf(zone_key, sizeof(zone_key), "th_zone_%d",  (uint8_t)i);
+
+        nvs_set_blob(h, eui_key,  eui64s[i], 8);
+        nvs_set_str(h,  name_key, names ? names[i] : "");
+        nvs_set_str(h,  zone_key, zones ? zones[i] : "");
+    }
+
+    nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "Saved %d Thread sensor(s) to NVS", count);
+}
+
+int nvs_load_thread_sensors(uint8_t eui64s[][8], char names[][32],
+                             char zones[][32], int max_count)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_THREAD, NVS_READONLY, &h) != ESP_OK) return 0;
+
+    uint8_t count = 0;
+    nvs_get_u8(h, "th_cnt", &count);
+    if (count > max_count) count = max_count;
+
+    int loaded = 0;
+    for (int i = 0; i < count; i++) {
+        char eui_key[16], name_key[16], zone_key[16];
+        snprintf(eui_key,  sizeof(eui_key),  "th_eui64_%d", (uint8_t)i);
+        snprintf(name_key, sizeof(name_key), "th_name_%d",  (uint8_t)i);
+        snprintf(zone_key, sizeof(zone_key), "th_zone_%d",  (uint8_t)i);
+
+        size_t eui_len = 8;
+        if (nvs_get_blob(h, eui_key, eui64s[loaded], &eui_len) != ESP_OK) continue;
+
+        if (names) {
+            size_t len = 32;
+            if (nvs_get_str(h, name_key, names[loaded], &len) != ESP_OK)
+                names[loaded][0] = '\0';
+        }
+        if (zones) {
+            size_t len = 32;
+            if (nvs_get_str(h, zone_key, zones[loaded], &len) != ESP_OK)
+                zones[loaded][0] = '\0';
+        }
+        loaded++;
+    }
+
+    nvs_close(h);
+    ESP_LOGI(TAG, "Loaded %d Thread sensor(s) from NVS", loaded);
+    return loaded;
 }

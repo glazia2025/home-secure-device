@@ -37,3 +37,11 @@ bool nvs_prov_load_sensor(char *out_sensor_mac, char *out_provision_key_hex,
                           char *out_name, size_t out_name_len,
                           char *out_zone, size_t out_zone_len);
 void nvs_prov_clear(void);
+
+// ── Thread sensor namespace ("glz_thread") — nRF/OpenThread sensor table ──
+// Stores EUI64 (8 bytes) + name + zone per Thread sensor, up to 10.
+// Separate from the ESP-NOW "glazia" namespace — no key collisions.
+void nvs_save_thread_sensors(const uint8_t eui64s[][8], const char names[][32],
+                              const char zones[][32], int count);
+int  nvs_load_thread_sensors(uint8_t eui64s[][8], char names[][32],
+                              char zones[][32], int max_count);

@@ -1,54 +1,43 @@
-#include "button.h"
+#include "sensor_pairing.h"
 #include "state.h"
 #include "api_client.h"
+#if CONFIG_ESPNOW_ENABLE
 #include "espnow.h"
-#include "ble.h"
+#else
+#include "nrf_thread.h"
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 #include "display.h"
-#include "fingerprint.h"
 #include "nvs_storage.h"
 #include "hub_control_ws.h"
 #include "esp_log.h"
-#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include <string.h>
 
-static const char *TAG = "BUTTON";
+static const char *TAG = "SENSOR_PAIR";
 
-// ── Sensor pairing: 2-minute polling window ───────────────────────────────
-#define SENSOR_PAIR_TIMEOUT_MS        (2 * 60 * 1000)   // 2 minutes total
-#define SENSOR_POLL_INTERVAL_MS       3000               // check server every 3 s
+#define SENSOR_PAIR_TIMEOUT_MS        (2 * 60 * 1000)
+#define SENSOR_POLL_INTERVAL_MS       3000
 #define SENSOR_POLL_STACK             6144
-#define SENSOR_PAIR_ESPNOW_MIN_WAIT_MS 15000             // grace period for sensor BLE provisioning
+#if CONFIG_ESPNOW_ENABLE
+#define SENSOR_PAIR_ESPNOW_MIN_WAIT_MS 15000
+#endif
 
 static TimerHandle_t  s_pair_timer          = NULL;
 static TaskHandle_t   s_poll_task           = NULL;
 static volatile bool  s_poll_busy           = false;
 static bool           s_pair_sensor_claimed = false;
 
-static void start_hub_pairing(void)
-{
-    ESP_LOGI(TAG, "Starting hub BLE provisioning from mode %d", g_mode);
-    g_mode = MODE_HUB_PAIRING;
-    ESP_LOGI(TAG, "Mode transition: HUB_PAIRING");
-    display_show("HUB PAIRING", "Connect via BLE");
-    ble_start();
-}
-
 static void pairing_timeout_cb(TimerHandle_t xTimer)
 {
-    // NOTE: do not call display_show or ESP_LOGI here — display_show calls ESP_LOGI
-    // internally, and ESP_LOGI's printf chain overflows the Tmr Svc task stack (~2KB).
-    // Poll task detects g_mode change and exits on its own.
     if (g_mode == MODE_SENSOR_PAIRING) {
         g_mode = MODE_OPERATIONAL;
     }
 }
 
-// POSTs /sensor-pairing-mode, then polls GET /pending-sensor every 3 s.
-// Pre-allocated at button_init() — driven by xTaskNotifyGive to avoid
-// xTaskCreate failure when the TLS WebSocket holds heap during operational mode.
 static void sensor_poll_task(void *arg)
 {
     (void)arg;
@@ -87,6 +76,7 @@ static void sensor_poll_task(void *arg)
                 s_pair_sensor_claimed = true;
                 nvs_prov_save_sensor(sensor_mac, provision_key, sensor_name, sensor_zone);
 
+#if CONFIG_ESPNOW_ENABLE
                 TickType_t elapsed = xTaskGetTickCount() - s_open_tick;
                 TickType_t min_ticks = pdMS_TO_TICKS(SENSOR_PAIR_ESPNOW_MIN_WAIT_MS);
                 if (elapsed < min_ticks) {
@@ -94,10 +84,21 @@ static void sensor_poll_task(void *arg)
                              (unsigned long)pdTICKS_TO_MS(min_ticks - elapsed));
                     vTaskDelay(min_ticks - elapsed);
                 }
-
                 ESP_LOGI(TAG, "Starting ESP-NOW pairing for %s", sensor_mac);
                 espnow_pair_sensor(sensor_mac, provision_key, sensor_name, sensor_zone);
                 memset(provision_key, 0, sizeof(provision_key));
+#else
+                uint8_t eui64[8];
+                for (int i = 0; i < 8; i++) {
+                    char b[3] = { sensor_mac[i*2], sensor_mac[i*2+1], '\0' };
+                    eui64[i] = (uint8_t)strtol(b, NULL, 16);
+                }
+                char pskd[9];
+                snprintf(pskd, sizeof(pskd), "%02X%02X%02X%02X",
+                         eui64[4], eui64[5], eui64[6], eui64[7]);
+                ESP_LOGI(TAG, "Thread: commissioning eui64=%s pskd=%s timeout=120s", sensor_mac, pskd);
+                nrf_thread_commission_sensor(eui64, pskd, 120);
+#endif
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(SENSOR_POLL_INTERVAL_MS));
@@ -127,64 +128,15 @@ void sensor_pairing_open_window(void)
     xTaskNotifyGive(s_poll_task);
 }
 
-// ── Button task ───────────────────────────────────────────────────────────
-void button_task(void *arg)
+void sensor_pairing_init(void)
 {
-    ESP_LOGI(TAG, "Button task running on GPIO %d", BUTTON_GPIO);
-    while (1) {
-        if (gpio_get_level(BUTTON_GPIO) == 0) {
-            vTaskDelay(pdMS_TO_TICKS(50));   // debounce
-            if (gpio_get_level(BUTTON_GPIO) == 0) {
-                ESP_LOGI(TAG, "Button pressed! Mode: %d", g_mode);
-
-                if (strlen(g_hub_secret) == 0 &&
-                    (g_mode == MODE_IDLE || g_mode == MODE_OPERATIONAL || g_mode == MODE_OFFLINE)) {
-                    start_hub_pairing();
-
-                } else if (g_mode == MODE_OPERATIONAL && strlen(g_hub_secret) > 0) {
-                    ESP_LOGI(TAG, "Registered hub button action: fingerprint gate before sensor pairing");
-                    display_show_fingerprint_screen("Authentication", "Place your finger on the sensor");
-                    g_mode = MODE_FINGERPRINT_VERIFY;
-                    ESP_LOGI(TAG, "Mode transition: FINGERPRINT_VERIFY");
-                    if (fp_verify() == ESP_OK) {
-                        ESP_LOGI(TAG, "Fingerprint verified. Opening sensor pairing");
-                        g_mode = MODE_OPERATIONAL;
-                        sensor_pairing_open_window();
-                    } else {
-                        ESP_LOGW(TAG, "Fingerprint verification failed. Sensor pairing not opened");
-                        g_mode = MODE_OPERATIONAL;
-                        vTaskDelay(pdMS_TO_TICKS(1200));
-                        display_show_dashboard(true);
-                    }
-                } else {
-                    ESP_LOGW(TAG, "Button press ignored in mode %d", g_mode);
-                }
-
-                // Wait for release
-                while (gpio_get_level(BUTTON_GPIO) == 0) vTaskDelay(pdMS_TO_TICKS(50));
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
-
-void button_init(void)
-{
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << BUTTON_GPIO),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = 1,
-    };
-    gpio_config(&io_conf);
-
     s_pair_timer = xTimerCreate(
         "pair_timer",
         pdMS_TO_TICKS(SENSOR_PAIR_TIMEOUT_MS),
-        pdFALSE,    // one-shot
+        pdFALSE,
         NULL,
         pairing_timeout_cb
     );
 
     xTaskCreatePinnedToCore(sensor_poll_task, "sensor_poll", SENSOR_POLL_STACK, NULL, 5, &s_poll_task, 0);
-    xTaskCreatePinnedToCore(button_task, "button_task", 4096, NULL, 10, NULL, 1);
 }

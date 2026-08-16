@@ -14,7 +14,7 @@
  */
 #include "display.h"
 #include "ble.h"
-#include "button.h"
+#include "sensor_pairing.h"
 #include "espnow.h"
 #include "fingerprint.h"
 #include "wifi.h"

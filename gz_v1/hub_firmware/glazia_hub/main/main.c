@@ -1,13 +1,14 @@
 #include "nvs_flash.h"
 #include "nvs_storage.h"
 #include "wifi.h"
-#include "button.h"
+#include "sensor_pairing.h"
 #include "display.h"
 #include "door_lock.h"
 #include "fingerprint.h"
 #include "hub_sensor.h"
 #include "espnow.h"
 #include "cam_uart.h"
+#include "nrf_thread.h"
 #include "state.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -51,7 +52,8 @@ static void fingerprint_init_task(void *arg)
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "APP CONSOLE: UART0 active");
+    /* USB-JTAG re-enumerates when app boots; wait for host to reconnect before logging */
+    vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGI(TAG, "Boot: app_main starting");
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -69,6 +71,9 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "cam_uart_init starting");
     cam_uart_init();
+
+    /* Init nRF IPC UART NOW — before WiFi — so probe bytes from nRF are not lost */
+    nrf_thread_preinit();
 
     ESP_LOGI(TAG, "wifi_platform_init starting");
     esp_err_t wifi_platform_err = wifi_platform_init();
@@ -102,9 +107,9 @@ void app_main(void) {
         ESP_LOGW(TAG, "Fingerprint boot init disabled to keep hub boot stable");
     }
 
-    ESP_LOGI(TAG, "button_init starting");
-    button_init();
-    ESP_LOGI(TAG, "Button input ready");
+    ESP_LOGI(TAG, "sensor_pairing_init starting");
+    sensor_pairing_init();
+    ESP_LOGI(TAG, "sensor_pairing_init done");
 
     // AUTO-CONNECT LOGIC
     ESP_LOGI(TAG, "Credential check starting");
@@ -115,7 +120,7 @@ void app_main(void) {
         wifi_connect(g_wifi_ssid, g_wifi_password);
     } else {
         g_mode = MODE_IDLE;
-        ESP_LOGI(TAG, "No saved credentials. Mode transition: IDLE, waiting for button BLE setup");
+        ESP_LOGI(TAG, "No saved credentials. Mode transition: IDLE, waiting for TFT BLE setup");
         display_show_setup_prompt();
     }
 

@@ -10,8 +10,8 @@
 
 static const char *TAG = "AQI_SENSOR";
 
-#define MQ135_ADC_UNIT          ADC_UNIT_2
-#define MQ135_ADC_CHANNEL       ADC_CHANNEL_9
+#define MQ135_ADC_UNIT          ADC_UNIT_1
+#define MQ135_ADC_CHANNEL       ADC_CHANNEL_4
 #define AQI_TASK_STACK          3072
 #define AQI_TASK_PRIORITY       4
 #define AQI_WARMUP_MS           10000
@@ -126,5 +126,6 @@ esp_err_t aqi_sensor_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    ESP_LOGI(TAG, "MQ-135 task started on ADC1_CH4 (GPIO5)");
     return ESP_OK;
 }

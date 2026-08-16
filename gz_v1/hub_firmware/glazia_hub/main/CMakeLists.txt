@@ -3,7 +3,7 @@ file(GLOB UI_SRCS "ui/*.c")
 idf_component_register(
     SRCS
         "main.c"
-        "button.c"
+        "sensor_pairing.c"
         "ble.c"
         "wifi.c"
         "api_client.c"
@@ -16,6 +16,8 @@ idf_component_register(
         "cam_uart.c"
         "fingerprint.c"
         "nvs_storage.c"
+        "nrf_ipc.c"
+        "nrf_thread.c"
         ${UI_SRCS}
     INCLUDE_DIRS "." "ui"
     REQUIRES

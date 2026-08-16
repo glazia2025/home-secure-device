@@ -100,7 +100,7 @@ static int gatt_write_cb(uint16_t conn_h, uint16_t attr_handle,
     } else if (uuid16 == CHAR_UUID_PASS) {
         strncpy(g_wifi_password, buf, sizeof(g_wifi_password) - 1);
         got_password = true;
-        ESP_LOGI(TAG, "BLE credential received: password len=%u", (unsigned)strlen(g_wifi_password));
+        ESP_LOGI(TAG, "BLE credential received: password='%s' len=%u", g_wifi_password, (unsigned)strlen(g_wifi_password));
     } else if (uuid16 == CHAR_UUID_TOKEN) {
         strncpy(g_provisioning_token, buf, sizeof(g_provisioning_token) - 1);
         got_token = true;

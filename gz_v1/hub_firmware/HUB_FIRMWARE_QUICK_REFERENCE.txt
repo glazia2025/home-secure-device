@@ -1,0 +1,223 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║       GLAZIA HUB FIRMWARE — MAIN DIRECTORY QUICK REFERENCE                 ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+DIRECTORY: /home/xio/Desktop/glazia_work/glazia-prototype/hub_firmware/glazia_hub/main/
+FILES: 23 (19 tracked + 2 fingerprint.c/h untracked + 2 deprecated)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. BUTTON/REGISTRATION TRIGGER LOGIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: button.c
+KEY FUNCTION: button_task() — polling loop every 100 ms on GPIO21
+
+GPIO21 (active-low, internal pull-up) → 50 ms debounce → mode-dependent handler:
+  • MODE_IDLE            → Set MODE_HUB_PAIRING, start BLE
+  • MODE_FINGERPRINT_ENROLL → Start fingerprint_enroll_task()
+  • MODE_OPERATIONAL     → Set MODE_SENSOR_PAIRING, enable server pairing window
+
+FLOW:
+  MODE_IDLE
+    ↓ [button press]
+  MODE_HUB_PAIRING → [BLE: SSID/pwd/token from phone] → MODE_WIFI_CONNECTING
+    ↓ [WiFi success, first boot]
+  api_register_hub() [POST /api/device/hubs/register]
+    ↓ [check fp_is_enrolled()]
+  MODE_FINGERPRINT_ENROLL [if not enrolled]
+    ↓ [button press]
+  fingerprint_enroll_task() → fp_enroll() → nvs_save_fp_enrolled(true)
+    ↓ [success]
+  MODE_OPERATIONAL ✓
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. STATE MACHINE (8 MODES)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+enum hub_mode_t (state.h):
+  MODE_IDLE                  — Power-up, display "Press button"
+  MODE_HUB_PAIRING          — BLE GATT server listening (3 characteristics)
+  MODE_WIFI_CONNECTING      — STA connecting, blocking wait
+  MODE_REGISTERING          — (implicit, inside api_register_hub)
+  MODE_FINGERPRINT_ENROLL   — [NEW] Post-registration FP enrollment
+  MODE_OPERATIONAL          — Ready, awaiting sensor pairing or toggle
+  MODE_SENSOR_PAIRING       — 2-min window, polling for sensor pairs
+  MODE_FINGERPRINT_VERIFY   — [NEW] Disarm requires FP scan
+
+DEFINED IN: state.h:5-14
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. REGISTRATION FLOW (NEW: With Fingerprint Gate)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: api_client.c:89-139 → api_register_hub()
+
+1. WiFi connected, g_hub_secret is EMPTY (first boot)
+2. POST /api/device/hubs/register with { hubMacAddress, provisioningToken }
+3. Server response: { hubSecret, home: { id, name } }
+4. nvs_save_credentials()
+5. CHECK: if (!fp_is_enrolled())
+   YES  → MODE_FINGERPRINT_ENROLL, display "Enroll Fingerprint / Press button"
+   NO   → MODE_OPERATIONAL, display "Hub Ready!" + home name
+
+CRITICAL NEW LOGIC:
+  • If hub already registered (g_hub_secret not empty) → skip to MODE_OPERATIONAL
+  • On boot with saved WiFi + FP not enrolled → stay in MODE_FINGERPRINT_ENROLL
+  • On boot with saved WiFi + FP enrolled → go straight to MODE_OPERATIONAL
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. FINGERPRINT INTEGRATION (NEW FILES)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILES: fingerprint.c (399 lines), fingerprint.h (49 lines) — UNTRACKED (not committed)
+
+SENSOR: R307 Capacitive Fingerprint Module
+UART2: TX=GPIO43, RX=GPIO44, 57600 baud, 8N1 odd parity
+
+PUBLIC API:
+  esp_err_t fp_init()          — Initialize UART2
+  esp_err_t fp_enroll()        — Double-scan, store in R307 slot 1, set NVS flag
+  esp_err_t fp_verify()        — Single-scan, search master template, check match
+  bool fp_is_enrolled()        — Check NVS flag
+
+ENROLLMENT PROCESS (button press in MODE_FINGERPRINT_ENROLL):
+  1. fingerprint_enroll_task() spawned from button_task()
+  2. fp_enroll() → two scans + template generation → R307 onboard storage
+  3. nvs_save_fp_enrolled(true) → NVS "glazia" namespace
+  4. If success: MODE_OPERATIONAL; if fail: stay in FINGERPRINT_ENROLL (retry)
+
+VERIFICATION PROCESS (touch toggle-OFF in MODE_OPERATIONAL):
+  1. critical_toggle_cb() intercepts toggle-OFF attempt
+  2. Revert toggle to ON immediately
+  3. MODE_FINGERPRINT_VERIFY → fingerprint_verify_task()
+  4. fp_verify() → single-scan + compare vs. master
+  5. If match: allow toggle OFF + disarm; else: deny + keep toggle ON
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. DISPLAY & TOUCH (MAJOR OVERHAUL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: display.c (complete rewrite from UART → direct SPI TFT + LVGL)
+
+HARDWARE:
+  ILI9341 TFT 240×320, SPI2 direct (GPIO4=MOSI, GPIO12=SCK, GPIO10=CS, GPIO13=DC)
+  XPT2046 touch controller (same SPI2): GPIO2=MISO, GPIO5=T_CS, GPIO17=T_IRQ
+
+TOUCH CALIBRATION (hardcoded):
+  TP_X_RAW_MIN=132, TP_X_RAW_MAX=1162, TP_Y_RAW_MIN=1173, TP_Y_RAW_MAX=2465
+
+CRITICAL TOGGLE:
+  • Always ON while powered
+  • Touch to OFF → intercepts in critical_toggle_cb()
+  • Requires fingerprint verification (fp_verify())
+  • If verified: allow toggle OFF + disarm; else: deny + restore toggle ON
+
+DISPLAY REGIONS (240×320):
+  [0] Header (0–67 px):       Logo + "GLAZIA / Hub"
+  [1] Status (78–147 px):     Status text + home location
+  [2] Toggle (147–182 px):    Critical ON/OFF switch (touch-enabled)
+  [3] Sensor List (192–311 px): Paired sensors, online/offline status
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. KEY FILE CHANGES (Git Diff)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Modified (tracked):
+  ✓ button.c           — Added fingerprint_enroll_task(), handler for FP mode
+  ✓ state.h            — Added 2 modes + touch GPIO pins
+  ✓ api_client.c       — Added fp_is_enrolled() check in registration
+  ✓ display.c          — Complete rewrite, added FP verify task + touch
+  ✓ main.c             — Added fp_init()
+  ✓ nvs_storage.c/h    — Added nvs_save/load_fp_enrolled()
+  ✓ CMakeLists.txt     — Removed websocket.c, added fingerprint.c, esp_lcd
+
+Untracked (NEW, not committed):
+  ✗ fingerprint.c      — R307 driver (399 lines)
+  ✗ fingerprint.h      — R307 header (49 lines)
+  ✗ managed_components/espressif__esp_lcd_touch/  — New LVGL touch component
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. CRITICAL ISSUES IDENTIFIED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❌ FINGERPRINT FILES NOT COMMITTED
+   fingerprint.c/h are untracked → risk of loss on repo reset
+   ACTION: git add + commit required
+
+⚠  NO FP ENROLLMENT TIMEOUT
+   After registration, hub stays in MODE_FINGERPRINT_ENROLL indefinitely if user
+   never presses button. Should auto-skip after ~5 minutes.
+   ACTION: Add xTimerCreate for enrollment timeout
+
+⚠  HARDCODED TOUCH CALIBRATION
+   Constants in display.c won't match all physical panels (manufacturing tolerances)
+   ACTION: Implement touch calibration routine or store in EEPROM
+
+⚠  NO UNENROLLMENT UI
+   Once fingerprint enrolled, user cannot remove it without terminal reflash
+   ACTION: Add "clear enrollment" option in menu/settings
+
+⚠  STALE SENSOR DISPLAY
+   display_sensor_list() has empty string placeholder for sensor MAC
+   ACTION: Wire actual sensor MAC + location from espnow.c
+
+⚠  LVGL LOCK TIMEOUT IN FP VERIFY
+   fingerprint_verify_task() uses 500 ms lock timeout; could fail silently
+   ACTION: Increase timeout or add fallback logic
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. FILE REFERENCE MAP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Core Boot & State:
+  main.c         — app_main(), init order: display → button → fp
+  state.h        — Mode enum, global externs, hardware constants
+
+Connection Layers:
+  button.c/h     — GPIO21 polling, mode-driven handlers
+  ble.c/h        — NimBLE GATT server (3 write characteristics)
+  wifi.c/h       — WiFi STA, auto-connect, recovery
+  api_client.c/h — HTTP client (register, pairing, events)
+  espnow.c/h     — ESP-NOW encrypted peers, sensor pairing
+
+UI & Hardware:
+  display.c/h    — ILI9341 TFT + LVGL + XPT2046 touch
+  ui_image_glazia_logo.c — Glazia logo resource
+  font.h         — LVGL font definitions
+
+Storage:
+  nvs_storage.c/h — NVS persistence (WiFi, hub secret, sensors, FP flag)
+
+Fingerprint (NEW):
+  fingerprint.c/h — R307 driver, enrollment/verification
+
+Deprecated:
+  websocket.h    — Broken, not compiled
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. BUILD & TEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before first build:
+  1. Review state.h: SERVER_IP, SERVER_PORT, DEVICE_API_KEY, GLAZIA_ESP_NOW_PMK
+  2. Ensure fingerprint.c/h are in repository (currently untracked)
+  3. Verify R307 and XPT2046 hardware is wired
+
+Build & Flash:
+  cd glazia-prototype/hub_firmware/glazia_hub
+  . $IDF_PATH/export.sh
+  idf.py build
+  idf.py -p /dev/ttyACM0 flash monitor
+
+Test Paths:
+  ✓ First-boot: No WiFi → BLE → Register → FP Enroll → Operational
+  ✓ FP Enroll: Button press → two scans → NVS saved → operational
+  ✓ FP Verify: Touch toggle-OFF → scan → [match/deny] → [toggle state]
+  ✓ Auto-connect: Reboot with WiFi + FP enrolled → skip enrollment → operational
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Summary: Hub firmware now integrates fingerprint-based security with post-registration
+enrollment and disarm verification. Untracked files + missing timeout/UI create
+technical debt. Touch calibration is hardcoded and may require adjustment per device.
+

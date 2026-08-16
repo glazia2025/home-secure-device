@@ -9,6 +9,9 @@
 #include "nvs_storage.h"
 #include "cam_uart.h"
 #include "fingerprint.h"
+#if !CONFIG_ESPNOW_ENABLE
+#include "nrf_thread.h"
+#endif
 
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -66,6 +69,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
         if (!s_initial_connect) {
+#if CONFIG_ESPNOW_ENABLE
             // WiFi recovered mid-operation.
             // If there is an unfinished sensor pairing in provisional NVS, retry it.
             char prov_mac[18] = {0}, prov_key[33] = {0}, prov_name[32] = {0}, prov_zone[32] = {0};
@@ -75,6 +79,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "WiFi back — resuming provisional sensor pairing for %s", prov_mac);
                 espnow_pair_sensor(prov_mac, prov_key, prov_name, prov_zone);
             }
+#endif
         }
     }
 }
@@ -221,8 +226,12 @@ void wifi_connect(const char *ssid, const char *password)
             ESP_LOGW(TAG, "AQI sensor delayed init failed: %s", esp_err_to_name(aqi_sensor_err));
         }
 
+#if CONFIG_ESPNOW_ENABLE
         ESP_LOGI(TAG, "Initializing ESP-NOW after WiFi connect");
         espnow_init();
+#else
+        nrf_thread_on_wifi_ready();
+#endif
 
         if (strlen(g_hub_secret) > 0) {
             // Already registered — go operational and restore saved sensors
@@ -232,6 +241,7 @@ void wifi_connect(const char *ssid, const char *password)
             display_hub_location(g_home_name);
             ESP_LOGI(TAG, "Already registered. Mode transition: OPERATIONAL, home='%s'", g_home_name);
             fp_start_enroll_if_needed();
+#if CONFIG_ESPNOW_ENABLE
             espnow_reconnect_saved_sensors(start_hub_ws);
 
             // Also check if a sensor pairing was interrupted (provisional NVS)
@@ -242,6 +252,9 @@ void wifi_connect(const char *ssid, const char *password)
                 ESP_LOGI(TAG, "Found interrupted sensor pairing — resuming for %s", prov_mac);
                 espnow_pair_sensor(prov_mac, prov_key, prov_name, prov_zone);
             }
+#else
+            start_hub_ws();
+#endif
         } else {
             // First boot — register with server
             ESP_LOGI(TAG, "No hub secret present; registering hub with server");
@@ -258,7 +271,9 @@ void wifi_enter_offline_mode(void)
 {
     ESP_LOGI(TAG, "Entering hub offline mode");
     s_offline_mode = true;
+#if CONFIG_ESPNOW_ENABLE
     espnow_deinit();
+#endif
     hub_control_ws_stop();
     cam_uart_webrtc_stop();
 
@@ -305,8 +320,13 @@ bool wifi_resume_from_offline_mode(void)
     }
 
     esp_wifi_set_ps(WIFI_PS_NONE);
+#if CONFIG_ESPNOW_ENABLE
     espnow_init();
     espnow_reconnect_saved_sensors(start_hub_ws);
+#else
+    nrf_thread_on_wifi_ready();
+    start_hub_ws();
+#endif
     g_mode = MODE_OPERATIONAL;
     ESP_LOGI(TAG, "Mode transition: OPERATIONAL after WiFi resume");
     display_user_name(g_user_name);

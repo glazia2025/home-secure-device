@@ -1,0 +1,56 @@
+/* uart0 (UARTE0 @ 0x40002000) is unused — console runs over USB CDC ACM below.
+ * Note: UARTE1 @ 0x40028000 is a separate instance and does NOT conflict with the
+ * onboard IMU on i2c0 (0x40003000), so uart1 is free for the ESP32 IPC link. */
+&uart0 {
+    status = "disabled";
+};
+
+/* Route console to USB CDC ACM */
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/ {
+    chosen {
+        zephyr,console = &cdc_acm_uart0;
+        zephyr,shell-uart = &cdc_acm_uart0;
+    };
+};
+
+/* Define pin control for uart1 on D0 (TX=P0.02) and D1 (RX=P0.03) */
+&pinctrl {
+    uart1_default: uart1_default {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 0, 2)>;
+        };
+        /* RX pull-up: line idles high when the ESP isn't driving it (unpowered/booting),
+         * so no spurious start bit / garbage byte is injected regardless of connect order. */
+        group2 {
+            psels = <NRF_PSEL(UART_RX, 0, 3)>;
+            bias-pull-up;
+        };
+    };
+    uart1_sleep: uart1_sleep {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 0, 2)>;
+            low-power-enable;
+        };
+        group2 {
+            psels = <NRF_PSEL(UART_RX, 0, 3)>;
+            bias-pull-up;
+            low-power-enable;
+        };
+    };
+};
+
+/* Enable uart1 using the pins we just defined */
+&uart1 {
+    compatible = "nordic,nrf-uarte";
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&uart1_default>;
+    pinctrl-1 = <&uart1_sleep>;
+    pinctrl-names = "default", "sleep";
+};

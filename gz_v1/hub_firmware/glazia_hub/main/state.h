@@ -52,9 +52,17 @@ extern char g_turn_psw[64];
 // The per-sensor LMK (provision_key) is delivered out-of-band (BLE→server→HTTP).
 #define GLAZIA_ESP_NOW_PMK  "glz!dev.pmk.2024"   // exactly 16 bytes
 
-// ── ESP32-S3 GPIO PINS ────────────────────────────────────────────────────
-#define BUTTON_GPIO   19   // Active-low button; GPIO19 is USB D+ on many S3 boards
+// ── nRF Thread co-chip IPC ────────────────────────────────────────────────
+// Set to 1 to restore original ESP-NOW mesh; 0 = nrf_test Thread mesh.
+#define CONFIG_ESPNOW_ENABLE  0
+// Console moved to USB-Serial-JTAG (sdkconfig), freeing UART0 for nRF IPC.
+// nRF XIAO: D0(P0.02)=TX → GPIO16(S3 RX); D1(P0.03)=RX ← GPIO15(S3 TX).
+#define NRF_UART_NUM          UART_NUM_0
+#define NRF_UART_TX_GPIO      15
+#define NRF_UART_RX_GPIO      16
+#define NRF_UART_BAUD         115200
 
+// ── ESP32-S3 GPIO PINS ────────────────────────────────────────────────────
 // Display — S3 drives ILI9341 TFT directly over SPI (no C6 bridge)
 // Wire: MOSI=GPIO38, SCK=GPIO39, CS=GPIO40, DC=GPIO41, RST=GPIO42
 //       LED/BL → 3.3 V, GND shared

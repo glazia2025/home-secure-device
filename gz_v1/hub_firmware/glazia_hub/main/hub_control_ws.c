@@ -11,7 +11,12 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_websocket_client.h"
+#if CONFIG_ESPNOW_ENABLE
 #include "espnow.h"
+#else
+#include "nrf_thread.h"
+#include <stdlib.h>
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_storage.h"
@@ -178,6 +183,7 @@ static void handle_sensor_delete_command(cJSON *root)
         ESP_LOGW(TAG, "sensor_delete_command missing sensorMacAddress");
         return;
     }
+#if CONFIG_ESPNOW_ENABLE
     esp_err_t err = espnow_remove_sensor(mac->valuestring);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Sensor %s removed via server command", mac->valuestring);
@@ -185,6 +191,16 @@ static void handle_sensor_delete_command(cJSON *root)
     } else {
         ESP_LOGW(TAG, "Sensor %s not in peer table (already removed?)", mac->valuestring);
     }
+#else
+    uint8_t eui64[8];
+    for (int i = 0; i < 8; i++) {
+        char b[3] = { mac->valuestring[i*2], mac->valuestring[i*2+1], '\0' };
+        eui64[i] = (uint8_t)strtol(b, NULL, 16);
+    }
+    nrf_thread_delete_sensor(eui64);
+    ESP_LOGI(TAG, "Thread sensor %s delete requested", mac->valuestring);
+    display_sensor_list();
+#endif
 }
 
 static void handle_hub_reset_command(cJSON *root)
@@ -195,8 +211,10 @@ static void handle_hub_reset_command(cJSON *root)
                  cJSON_IsString(action) ? action->valuestring : "null");
         return;
     }
-    ESP_LOGW(TAG, "hub_reset_command received — notifying sensors, erasing NVS, restarting");
+    ESP_LOGW(TAG, "hub_reset_command received — erasing NVS, restarting");
+#if CONFIG_ESPNOW_ENABLE
     espnow_send_reset_to_all_sensors();
+#endif
     nvs_clear_credentials();
     nvs_prov_clear();
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -211,11 +229,15 @@ static void handle_sensor_toggle_command(cJSON *root)
         ESP_LOGW(TAG, "sensor_toggle_command: missing fields");
         return;
     }
+#if CONFIG_ESPNOW_ENABLE
     bool state = cJSON_IsTrue(en);
     if (espnow_set_sensor_enabled_by_mac(mac->valuestring, state) == ESP_OK)
         ESP_LOGI(TAG, "Sensor %s %s via server", mac->valuestring, state ? "enabled" : "disabled");
     else
         ESP_LOGW(TAG, "sensor_toggle_command: %s not found", mac->valuestring);
+#else
+    ESP_LOGW(TAG, "sensor_toggle_command: Thread sensors have no enable/disable state — ignored");
+#endif
 }
 
 static void handle_ws_text(const char *data, int len)
@@ -239,7 +261,9 @@ static void handle_ws_text(const char *data, int len)
                 display_user_name(g_user_name);
                 ESP_LOGI(TAG, "Username updated from ready event");
             }
+#if CONFIG_ESPNOW_ENABLE
             espnow_queue_hub_event("hub_online");
+#endif
         } else if (strcmp(type->valuestring, "door_lock_command") == 0) {
             handle_door_lock_command(root);
         } else if (strcmp(type->valuestring, "viewer-ready") == 0) {
