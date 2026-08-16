@@ -39,6 +39,7 @@ static void on_ipc_cmd(uint8_t type, const uint8_t *payload, uint16_t len)
     case IPC_CMD_NET_STATUS:
         led_hub_flash_rx();
         LOG_INF("CMD_NET_STATUS");
+        thread_mgr_report_status();   /* reply with current NET_UP/NET_DOWN */
         break;
 
     case IPC_CMD_COMMISSION: {
@@ -86,6 +87,13 @@ int main(void)
     thread_mgr_init();
     LOG_INF("thread_mgr_init done — entering event_relay_init");
     event_relay_init();
+
+    /* Form the Thread network autonomously at boot. It's a self-contained 802.15.4 network —
+     * independent of WiFi and the hub — so forming here (radio idle, uninterrupted) lets it
+     * attach cleanly and fast. OpenThread then keeps it up on its own; the hub only observes
+     * NET_UP. thread_mgr_form_network() is idempotent (guarded to run once). */
+    LOG_INF("event_relay_init done — forming Thread network");
+    thread_mgr_form_network();
 
     uint32_t tick = 0;
     while (1) {

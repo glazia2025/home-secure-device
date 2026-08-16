@@ -29,5 +29,6 @@ void nrf_ipc_send(uint8_t type, const uint8_t *payload, uint16_t len);
 
 void ipc_cmd_ping(void);
 void ipc_cmd_net_form(void);
+void ipc_cmd_net_status(void);
 void ipc_cmd_commission(const uint8_t eui64[8], const char *pskd, uint16_t timeout_s);
 void ipc_cmd_sensor_del(const uint8_t eui64[8]);

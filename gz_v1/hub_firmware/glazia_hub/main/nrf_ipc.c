@@ -181,6 +181,13 @@ void ipc_cmd_net_form(void)
     ESP_LOGI(TAG, "CMD_NET_FORM sent");
 }
 
+void ipc_cmd_net_status(void)
+{
+    /* Read-only query — nRF replies IPC_EVT_NET_UP/NET_DOWN with its current Thread role.
+     * Safe to poll (never changes nRF state), unlike NET_FORM. */
+    nrf_ipc_send(IPC_CMD_NET_STATUS, NULL, 0);
+}
+
 void ipc_cmd_commission(const uint8_t eui64[8], const char *pskd, uint16_t timeout_s)
 {
     uint8_t buf[8 + 9 + 2];

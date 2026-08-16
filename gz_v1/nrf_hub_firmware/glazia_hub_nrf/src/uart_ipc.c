@@ -18,7 +18,7 @@ K_MSGQ_DEFINE(s_rx_msgq, sizeof(struct rx_frame), 4, 4);
  * work — otDatasetCreateNewNetwork() generates the network key + PSKc via mbedTLS crypto, and
  * otCommissionerStart()/AddJoiner() are stack-hungry too. 2048 B overflowed and corrupted
  * adjacent memory (froze the LED task -> solid red). 8192 matches CONFIG_MAIN_STACK_SIZE. */
-static K_THREAD_STACK_DEFINE(s_rx_stack, 8192);
+static K_THREAD_STACK_DEFINE(s_rx_stack, 12288);
 static struct k_thread s_rx_thread;
 
 /* ── Async DMA RX double-buffer ─────────────────────────────────────────────

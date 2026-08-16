@@ -12,7 +12,7 @@
 static const char *TAG = "NRF_THR";
 
 volatile bool g_thread_net_ready = false;
-static volatile bool s_ipc_alive = false;
+static volatile bool s_ipc_alive  = false;
 
 /* ── EUI64 helpers ────────────────────────────────────────────────────────── */
 static void eui64_to_hex(const uint8_t eui64[8], char out[17])
@@ -157,19 +157,47 @@ static void ipc_handshake_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* The nRF forms its Thread network autonomously at its own boot (a self-contained 802.15.4
+ * network, independent of WiFi and the hub). The hub does NOT drive formation — it only learns
+ * the state: once the UART link is up, poll CMD_NET_STATUS until the nRF reports NET_UP. This is
+ * a read-only query (never changes nRF state, unlike NET_FORM), so it's safe to repeat — and it
+ * also covers a hub-only reset while the nRF is already up (no role change → no async NET_UP),
+ * plus a NET_UP frame lost to EMI. */
+#define NET_STATUS_POLL_MS   3000
+#define NET_STATUS_MAX_TRIES 10
+
+static void net_watch_task(void *arg)
+{
+    while (!s_ipc_alive) vTaskDelay(pdMS_TO_TICKS(100));
+
+    for (int i = 0; i < NET_STATUS_MAX_TRIES && !g_thread_net_ready; i++) {
+        ipc_cmd_net_status();
+        for (int t = 0; t < NET_STATUS_POLL_MS / 100 && !g_thread_net_ready; t++)
+            vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (g_thread_net_ready)
+        ESP_LOGI(TAG, "Thread network confirmed up");
+    else
+        ESP_LOGW(TAG, "Thread network not up after %d s of status polls — check nRF",
+                 (NET_STATUS_POLL_MS * NET_STATUS_MAX_TRIES) / 1000);
+    vTaskDelete(NULL);
+}
+
 void nrf_thread_preinit(void)
 {
     nrf_ipc_init(on_ipc_event);
     ESP_LOGI(TAG, "nRF IPC UART ready at boot (RX=GPIO%d TX=GPIO%d)", NRF_UART_RX_GPIO, NRF_UART_TX_GPIO);
     /* Fire the handshake burst at boot, decoupled from WiFi. */
     xTaskCreate(ipc_handshake_task, "ipc_hs", 3072, NULL, 3, NULL);
+    /* Passive watcher: confirms the nRF's autonomous Thread network came up. */
+    xTaskCreate(net_watch_task, "net_watch", 3072, NULL, 3, NULL);
 }
 
 void nrf_thread_on_wifi_ready(void)
 {
-    ESP_LOGI(TAG, "WiFi ready — sending NET_FORM to nRF");
-    ipc_cmd_net_form();
-    ESP_LOGI(TAG, "Thread network formation requested");
+    /* Thread formation is autonomous on the nRF and independent of WiFi — nothing to do here. */
+    ESP_LOGI(TAG, "WiFi ready (Thread network is formed autonomously by the nRF)");
 }
 
 void nrf_thread_commission_sensor(const uint8_t eui64[8], const char *pskd, uint16_t timeout_s)
