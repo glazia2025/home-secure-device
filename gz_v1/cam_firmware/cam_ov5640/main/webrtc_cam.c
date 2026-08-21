@@ -572,8 +572,8 @@ static void cam_webrtc_task(void *arg)
 
 void webrtc_cam_init(void)
 {
-    /* esp_peer INFO logs include TURN credentials. */
-    esp_log_level_set("AGENT", ESP_LOG_INFO);
+    /* esp_peer INFO logs expose TURN credentials; keep operational failures only. */
+    esp_log_level_set("AGENT", ESP_LOG_WARN);
     s_cert_ready = xSemaphoreCreateBinary();
     if (!s_cert_ready) {
         ESP_LOGE(TAG, "Failed to allocate certificate semaphore");
