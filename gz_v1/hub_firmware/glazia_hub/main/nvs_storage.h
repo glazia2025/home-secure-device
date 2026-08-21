@@ -39,9 +39,12 @@ bool nvs_prov_load_sensor(char *out_sensor_mac, char *out_provision_key_hex,
 void nvs_prov_clear(void);
 
 // ── Thread sensor namespace ("glz_thread") — nRF/OpenThread sensor table ──
-// Stores EUI64 (8 bytes) + name + zone per Thread sensor, up to 10.
+// Stores EUI64 (8 bytes) + name + zone + enabled flag per Thread sensor, up to 10.
 // Separate from the ESP-NOW "glazia" namespace — no key collisions.
+// `enabled` may be NULL on save (defaults to all-enabled) or on load (skipped).
+// A missing per-index enabled key loads as `true`, so tables written by older
+// firmware upgrade cleanly (every existing sensor stays enabled).
 void nvs_save_thread_sensors(const uint8_t eui64s[][8], const char names[][32],
-                              const char zones[][32], int count);
+                              const char zones[][32], const bool enabled[], int count);
 int  nvs_load_thread_sensors(uint8_t eui64s[][8], char names[][32],
-                              char zones[][32], int max_count);
+                              char zones[][32], bool enabled[], int max_count);

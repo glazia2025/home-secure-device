@@ -13,6 +13,7 @@
 #include "thread_mgr.h"
 #include "uart_ipc.h"
 #include "led_indicator.h"
+#include "event_relay.h"
 
 LOG_MODULE_REGISTER(glazia_hub_nrf_thread, LOG_LEVEL_INF);
 
@@ -37,6 +38,13 @@ static char     s_pending_pskd[9];
 static uint16_t s_pending_timeout_s;
 static bool     s_have_pending;
 
+/* The commissioner join callback reports a *hashed* Joiner ID, not the raw factory EUI64, so it
+ * cannot be sent to the server (which keys sensors by real EUI64). We keep the last EUI64 actually
+ * passed to otCommissionerAddJoiner and report THAT on join/fail. Pairing is one-at-a-time on the
+ * hub (server pending-sensor + s_pair_sensor_claimed gate), so a single slot is sufficient. */
+static uint8_t  s_last_joiner_eui64[8];
+static bool     s_have_last_joiner;
+
 /* Add a joiner assuming the caller already holds (or must not take) the OT API mutex —
  * i.e. no locking here. Emits COMM_FAILED to the ESP on synchronous rejection. */
 static void add_joiner_locked(const uint8_t eui64[8], const char *pskd, uint16_t timeout_s)
@@ -46,6 +54,8 @@ static void add_joiner_locked(const uint8_t eui64[8], const char *pskd, uint16_t
     otError err = otCommissionerAddJoiner(s_ctx->instance, &addr, pskd,
                                           (uint32_t)timeout_s * 1000);
     if (err == OT_ERROR_NONE) {
+        memcpy(s_last_joiner_eui64, eui64, 8);
+        s_have_last_joiner = true;
         LOG_INF("commission: eui64=%02x%02x%02x%02x%02x%02x%02x%02x PSKd=%s timeout=%ds",
                 eui64[0], eui64[1], eui64[2], eui64[3],
                 eui64[4], eui64[5], eui64[6], eui64[7], pskd, timeout_s);
@@ -54,6 +64,63 @@ static void add_joiner_locked(const uint8_t eui64[8], const char *pskd, uint16_t
         ipc_send_comm_failed(eui64);
     }
 }
+
+/* Passive per-sensor liveness. Each SED child data-polls the hub every 1 s and registers a 120 s
+ * child timeout (set on the sensor). When a child stops polling, OpenThread evicts it from the
+ * child table after that timeout and fires CHILD_REMOVED here; a (re)attach fires CHILD_ADDED. We
+ * relay both to the ESP by the child's factory EUI64 (its 802.15.4 extended address). Runs in OT
+ * callback context — read the entry and UART-send only; no OT calls, no re-lock. */
+static void neighbor_cb(otNeighborTableEvent event, const otNeighborTableEntryInfo *info)
+{
+    if (!info) return;
+    /* mExtAddress is the child's Thread MLE ext address (= factory EUI64 with the U/L bit 0x02
+     * inverted). Log the raw bytes so we can confirm on HW it differs from the sensor's factory
+     * EUI64 by only that bit — the ESP resolves it back to the stored EUI64 (U/L bit masked). */
+    const uint8_t *m = info->mInfo.mChild.mExtAddress.m8;
+    if (event == OT_NEIGHBOR_TABLE_EVENT_CHILD_REMOVED) {
+        LOG_WRN("child removed (sensor lost): %02x%02x%02x%02x%02x%02x%02x%02x",
+                m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7]);
+        ipc_send_sensor_lost(m);
+    } else if (event == OT_NEIGHBOR_TABLE_EVENT_CHILD_ADDED) {
+        LOG_INF("child added (sensor online): %02x%02x%02x%02x%02x%02x%02x%02x",
+                m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7]);
+        ipc_send_sensor_online(m);
+    }
+}
+
+/* ── Active child-table poll ───────────────────────────────────────────────────
+ * The passive neighbor_cb (CHILD_REMOVED) proved unreliable, so we ALSO read the child table
+ * directly on a timer and ship the full snapshot to the ESP. Reading the table depends only on
+ * OpenThread's child-timeout eviction (what actually removes a dead SED), not on any event
+ * callback. Each SED data-polls every 1 s to stay attached, so a present child = a live sensor;
+ * no extra radio/battery — this only reads existing state and sends it over the on-board UART. */
+#define CHILD_POLL_MS 3000
+
+static void child_monitor_thread(void *a, void *b, void *c)
+{
+    static uint8_t list[32 * 8];
+    while (1) {
+        k_sleep(K_MSEC(CHILD_POLL_MS));
+        if (!s_ctx) continue;
+
+        int count = 0;
+        openthread_api_mutex_lock(s_ctx);
+        uint16_t max = otThreadGetMaxAllowedChildren(s_ctx->instance);
+        for (uint16_t i = 0; i < max && count < 32; i++) {
+            otChildInfo info;
+            if (otThreadGetChildInfoByIndex(s_ctx->instance, i, &info) != OT_ERROR_NONE) continue;
+            memcpy(&list[count * 8], info.mExtAddress.m8, 8);
+            count++;
+        }
+        openthread_api_mutex_unlock(s_ctx);
+
+        LOG_INF("child poll: %d present", count);
+        ipc_send_child_list(list, count);
+    }
+}
+
+static K_THREAD_STACK_DEFINE(s_child_stack, 4096);
+static struct k_thread s_child_thread;
 
 static void state_cb(otChangedFlags flags, void *ctx)
 {
@@ -103,20 +170,22 @@ static void joiner_cb(otCommissionerJoinerEvent event,
 {
     if (!eui64) return;
 
+    /* Report the real factory EUI64 we added, not the callback's hashed Joiner ID (which the
+     * server can't match). Fall back to the callback ID only if we somehow have no record. */
+    const uint8_t *id = s_have_last_joiner ? s_last_joiner_eui64 : eui64->m8;
+
     if (event == OT_COMMISSIONER_JOINER_FINALIZE) {
         s_finalized = true;
         LOG_INF("sensor joined: %02x%02x%02x%02x%02x%02x%02x%02x",
-                eui64->m8[0], eui64->m8[1], eui64->m8[2], eui64->m8[3],
-                eui64->m8[4], eui64->m8[5], eui64->m8[6], eui64->m8[7]);
+                id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
         led_hub_flash_joined();
-        ipc_send_sensor_joined(eui64->m8);
+        ipc_send_sensor_joined(id);
     } else if (event == OT_COMMISSIONER_JOINER_REMOVED) {
         if (!s_finalized) {
             LOG_WRN("commission failed: %02x%02x%02x%02x%02x%02x%02x%02x",
-                    eui64->m8[0], eui64->m8[1], eui64->m8[2], eui64->m8[3],
-                    eui64->m8[4], eui64->m8[5], eui64->m8[6], eui64->m8[7]);
+                    id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
             led_hub_flash_comm_failed();
-            ipc_send_comm_failed(eui64->m8);
+            ipc_send_comm_failed(id);
         }
         s_finalized = false;
     }
@@ -127,7 +196,14 @@ void thread_mgr_init(void)
     s_ctx = openthread_get_default_context();
     openthread_api_mutex_lock(s_ctx);
     otSetStateChangedCallback(s_ctx->instance, state_cb, s_ctx);
+    otThreadRegisterNeighborTableCallback(s_ctx->instance, neighbor_cb);
     openthread_api_mutex_unlock(s_ctx);
+
+    /* Active child-table poller: authoritative liveness source for the ESP watchdog. */
+    k_thread_create(&s_child_thread, s_child_stack, K_THREAD_STACK_SIZEOF(s_child_stack),
+                    child_monitor_thread, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
+    k_thread_name_set(&s_child_thread, "child_mon");
+
     LOG_INF("thread_mgr ready");
 }
 
@@ -252,9 +328,14 @@ void thread_mgr_commission(const uint8_t eui64[8], const char *pskd, uint16_t ti
 
 void thread_mgr_remove_joiner(const uint8_t eui64[8])
 {
+    /* Remove from the commissioning allowlist so it can't silently re-join without re-pairing. */
     openthread_api_mutex_lock(s_ctx);
     otExtAddress addr;
     memcpy(addr.m8, eui64, 8);
     otCommissionerRemoveJoiner(s_ctx->instance, &addr);
     openthread_api_mutex_unlock(s_ctx);
+
+    /* RemoveJoiner only edits the allowlist — it can't evict an already-joined node. Send a
+     * "leave" downlink so the sensor factory-resets itself off the network. */
+    event_relay_send_leave(eui64);
 }

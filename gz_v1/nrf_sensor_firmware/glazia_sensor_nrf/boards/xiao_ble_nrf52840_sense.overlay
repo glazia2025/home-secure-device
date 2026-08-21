@@ -1,0 +1,33 @@
+/ {
+    sensor_inputs {
+        compatible = "gpio-keys";
+
+        /* sensor0 = reed switch: active-low, internal pull-up, any-edge */
+        sensor_0: sensor_0 {
+            gpios = <&gpio0 2 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            label = "REED";
+        };
+
+        /* sensor1 = vibration sensor: no pull, rising-edge */
+        sensor_1: sensor_1 {
+            gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>;
+            label = "VIBRATION";
+        };
+    };
+
+    /* Factory-reset push-button: wire between D1 (P0.03) and GND. Active-low, internal
+     * pull-up (no external resistor). Held ~3 s at boot => wipe Thread credentials. */
+    reset_button {
+        compatible = "gpio-keys";
+        reset_btn: reset_btn {
+            gpios = <&gpio0 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            label = "FACTORY_RESET";
+        };
+    };
+
+    aliases {
+        sensor0 = &sensor_0;
+        sensor1 = &sensor_1;
+        resetbtn = &reset_btn;
+    };
+};

@@ -102,7 +102,7 @@ esp_err_t camera_core_init_webrtc(void)
         .ledc_channel = LEDC_CHANNEL_0,
 
         .pixel_format = PIXFORMAT_YUV422,
-        .frame_size   = FRAMESIZE_VGA,
+        .frame_size   = FRAMESIZE_QVGA,
         .jpeg_quality = 0,
         .fb_count     = 2,
         .fb_location  = CAMERA_FB_IN_PSRAM,

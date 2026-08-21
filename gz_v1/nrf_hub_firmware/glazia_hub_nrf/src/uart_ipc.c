@@ -201,3 +201,20 @@ void ipc_send_comm_failed(const uint8_t eui64[8])
 {
     uart_ipc_send(IPC_EVT_COMM_FAILED, eui64, 8);
 }
+
+void ipc_send_sensor_lost(const uint8_t eui64[8])
+{
+    uart_ipc_send(IPC_EVT_SENSOR_LOST, eui64, 8);
+}
+
+void ipc_send_sensor_online(const uint8_t eui64[8])
+{
+    uart_ipc_send(IPC_EVT_SENSOR_ONLINE, eui64, 8);
+}
+
+void ipc_send_child_list(const uint8_t *extaddrs, int n_children)
+{
+    if (n_children < 0) n_children = 0;
+    if (n_children > 32) n_children = 32;   /* 32*8 = 256 payload cap */
+    uart_ipc_send(IPC_EVT_CHILD_LIST, extaddrs, (uint16_t)(n_children * 8));
+}

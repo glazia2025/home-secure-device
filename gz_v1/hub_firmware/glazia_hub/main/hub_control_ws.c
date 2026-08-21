@@ -236,7 +236,15 @@ static void handle_sensor_toggle_command(cJSON *root)
     else
         ESP_LOGW(TAG, "sensor_toggle_command: %s not found", mac->valuestring);
 #else
-    ESP_LOGW(TAG, "sensor_toggle_command: Thread sensors have no enable/disable state — ignored");
+    bool state = cJSON_IsTrue(en);
+    uint8_t eui64[8];
+    for (int i = 0; i < 8; i++) {
+        char b[3] = { mac->valuestring[i*2], mac->valuestring[i*2+1], '\0' };
+        eui64[i] = (uint8_t)strtol(b, NULL, 16);
+    }
+    nrf_thread_set_sensor_enabled(eui64, state);
+    ESP_LOGI(TAG, "Thread sensor %s %s via server", mac->valuestring, state ? "enabled" : "disabled");
+    display_sensor_list();
 #endif
 }
 

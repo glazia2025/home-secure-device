@@ -16,6 +16,8 @@
 #include "ble.h"
 #include "sensor_pairing.h"
 #include "espnow.h"
+#include "nrf_thread.h"
+#include "nvs_storage.h"
 #include "fingerprint.h"
 #include "wifi.h"
 #include "ui/ui.h"
@@ -264,6 +266,7 @@ typedef struct {
     lv_obj_t *sw;
     bool turn_on;
     int action;
+    uint8_t eui64[8];   /* reserved: per-sensor auth target */
 } auth_task_arg_t;
 
 enum {
@@ -294,6 +297,8 @@ static void auth_toggle_task(void *arg)
     lv_obj_t *sw = a->sw;
     bool turn_on = a->turn_on;
     int action = a->action;
+    uint8_t eui64[8];
+    memcpy(eui64, a->eui64, 8);
     free(a);
 
     g_mode = MODE_FINGERPRINT_VERIFY;
@@ -360,7 +365,7 @@ static void auth_toggle_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void start_auth_action(int action, lv_obj_t *sw, bool turn_on)
+static void start_auth_action(int action, lv_obj_t *sw, bool turn_on, const uint8_t *eui64)
 {
     if (s_auth_task != NULL) {
         display_fingerprint_status("Auth in progress");
@@ -375,6 +380,8 @@ static void start_auth_action(int action, lv_obj_t *sw, bool turn_on)
     arg->sw = sw;
     arg->turn_on = turn_on;
     arg->action = action;
+    if (eui64) memcpy(arg->eui64, eui64, 8);
+    else       memset(arg->eui64, 0, 8);
 
     if (xTaskCreatePinnedToCore(auth_toggle_task, "fp_auth", 6144, arg, 5, &s_auth_task, 1) != pdPASS) {
         free(arg);
@@ -406,7 +413,7 @@ static void critical_toggle_cb(lv_event_t *e)
         return;
     }
 
-    start_auth_action(AUTH_ACTION_HUB_TOGGLE, sw, is_on);
+    start_auth_action(AUTH_ACTION_HUB_TOGGLE, sw, is_on, NULL);
 }
 
 static void lvgl_flush_wait_cb(lv_disp_drv_t *drv) {
@@ -1173,7 +1180,7 @@ static void add_fingerprint_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     ESP_LOGI(TAG, "Touch: Add Fingerprint");
     show_fingerprint_screen_locked("Authentication", "Place your finger on the sensor");
-    start_auth_action(AUTH_ACTION_ADD_FINGERPRINT, NULL, false);
+    start_auth_action(AUTH_ACTION_ADD_FINGERPRINT, NULL, false, NULL);
 }
 
 static void add_sensor_auth_cb(lv_event_t *e)
@@ -1181,7 +1188,7 @@ static void add_sensor_auth_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     ESP_LOGI(TAG, "Touch: Add Sensor");
     show_fingerprint_screen_locked("Authentication", "Place your finger on the sensor");
-    start_auth_action(AUTH_ACTION_ADD_SENSOR, NULL, false);
+    start_auth_action(AUTH_ACTION_ADD_SENSOR, NULL, false, NULL);
 }
 
 static void add_sensor_start_cb(lv_event_t *e)
@@ -1211,6 +1218,82 @@ static void sensor_switch_cb(lv_event_t *e)
     ESP_LOGI(TAG, "Touch: Sensor %d %s", index, enabled ? "enabled" : "disabled");
     espnow_set_sensor_enabled(index, enabled);
 }
+
+#if !CONFIG_ESPNOW_ENABLE
+/* Thread sensor rows are keyed by EUI64, but LVGL callbacks carry only an int index. This mirror of
+ * the on-screen list (rebuilt on every refresh) lets the toggle/delete callbacks resolve an index
+ * back to its EUI64. */
+static uint8_t s_thread_row_eui64[10][8];
+static int     s_thread_row_count;
+
+static void thread_switch_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED || s_switch_internal) return;
+    lv_obj_t *sw = lv_event_get_target(e);
+    int index = (int)(intptr_t)lv_event_get_user_data(e);
+    if (index < 0 || index >= s_thread_row_count) return;
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    ESP_LOGI(TAG, "Touch: Thread sensor %d %s", index, enabled ? "enabled" : "disabled");
+    nrf_thread_set_sensor_enabled(s_thread_row_eui64[index], enabled);
+}
+
+static void create_thread_sensor_row(lv_obj_t *parent, int index, const char *name, bool enabled)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_pos(row, 8, 4 + index * 50);
+    lv_obj_set_size(row, 224, 44);
+    lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(row, lv_color_hex(UI_COLOR_CARD_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(row, 190, LV_PART_MAIN);
+    lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(row, 12, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(row, lv_color_hex(UI_COLOR_CARD), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(row, 230, LV_PART_MAIN);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *sensor_icon = lv_img_create(row);
+    lv_obj_set_pos(sensor_icon, 8, 7);
+    lv_img_set_src(sensor_icon, &img_sensor);
+    lv_img_set_zoom(sensor_icon, 150);
+    lv_obj_set_style_img_recolor(sensor_icon, lv_color_hex(UI_COLOR_AMBER),
+                                 LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_img_recolor_opa(sensor_icon, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(sensor_icon, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *label = lv_label_create(row);
+    lv_label_set_text(label, name);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_10, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label,
+                                lv_color_hex(enabled ? UI_COLOR_TEXT_PRIMARY : UI_COLOR_TEXT_DIM),
+                                LV_PART_MAIN);
+    lv_obj_set_pos(label, 46, 16);
+    lv_obj_set_size(label, 78, 14);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *sw = lv_switch_create(row);
+    lv_obj_set_pos(sw, 128, 10);
+    lv_obj_set_size(sw, 44, 24);
+    ui_style_toggle(sw);
+    make_touch_target(sw);
+    set_switch_checked_locked(sw, enabled);
+    lv_obj_add_event_cb(sw, thread_switch_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)index);
+    /* No delete button on the TFT — Thread sensors are removed via the app only. */
+
+    /* Offline badge: the liveness watchdog declared this sensor dead (still paired, just
+     * unreachable). Recolor red and add an "offline" tag; auto-clears on reconnect. */
+    if (nrf_thread_is_sensor_offline(s_thread_row_eui64[index])) {
+        lv_obj_set_style_img_recolor(sensor_icon, lv_color_hex(C_RED_U32),
+                                     LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(label, lv_color_hex(C_RED_U32), LV_PART_MAIN);
+        lv_obj_set_pos(label, 46, 8);   /* nudge name up to make room for the tag */
+        lv_obj_t *off = lv_label_create(row);
+        lv_label_set_text(off, "offline");
+        lv_obj_set_style_text_font(off, &lv_font_montserrat_10, LV_PART_MAIN);
+        lv_obj_set_style_text_color(off, lv_color_hex(C_RED_U32), LV_PART_MAIN);
+        lv_obj_set_pos(off, 46, 26);
+    }
+}
+#endif  /* !CONFIG_ESPNOW_ENABLE */
 
 static void create_sensor_row(lv_obj_t *parent, int index, const char *name, bool enabled, bool paired)
 {
@@ -1441,6 +1524,8 @@ static void refresh_sensor_nodes_locked(void)
     if (!objects.settings_menu_cont_1) return;
 
     lv_obj_clean(objects.settings_menu_cont_1);
+
+#if CONFIG_ESPNOW_ENABLE
     int count = espnow_get_sensor_count();
     if (count == 0) {
         lv_obj_t *label = lv_label_create(objects.settings_menu_cont_1);
@@ -1459,6 +1544,44 @@ static void refresh_sensor_nodes_locked(void)
             create_sensor_row(objects.settings_menu_cont_1, i, name, enabled, paired);
         }
     }
+#else
+    /* Thread sensors: load the table, cache EUI64s so the row callbacks can resolve their index. */
+    uint8_t eui64s[10][8];
+    char    names[10][32];
+    char    zones[10][32];
+    bool    enabled[10];
+    int count = nvs_load_thread_sensors(eui64s, names, zones, enabled, 10);
+    s_thread_row_count = count;
+
+    if (count == 0) {
+        lv_obj_t *label = lv_label_create(objects.settings_menu_cont_1);
+        lv_label_set_text(label, "No sensors paired yet");
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(C_T2_U32), LV_PART_MAIN);
+        lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        memcpy(s_thread_row_eui64[i], eui64s[i], 8);
+        create_thread_sensor_row(objects.settings_menu_cont_1, i, names[i], enabled[i]);
+    }
+#endif
+}
+
+/* Called by the liveness watchdog when a sensor is declared offline or comes back. The offline
+ * state itself lives in the watchdog (nrf_thread_is_sensor_offline); here we just re-render the
+ * sensor list if it happens to be on screen so the badge appears/clears live. */
+void display_set_thread_sensor_offline(const uint8_t eui64[8], bool offline)
+{
+    (void)eui64;
+    (void)offline;
+    if (!display_is_ready()) return;
+    if (!lvgl_port_lock(pdMS_TO_TICKS(300))) return;
+    if (s_current_screen == SCREEN_ID_SENSOR_NODES_SETTING) {
+        refresh_sensor_nodes_locked();
+    }
+    lvgl_port_unlock();
 }
 
 void display_show(const char *line1, const char *line2)

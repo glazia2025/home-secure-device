@@ -200,7 +200,7 @@ void ipc_cmd_commission(const uint8_t eui64[8], const char *pskd, uint16_t timeo
 
     char hex[17];
     for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02x", eui64[i]);
-    ESP_LOGI(TAG, "CMD_COMMISSION eui64=%s pskd=%s timeout=%us", hex, pskd, timeout_s);
+    ESP_LOGD(TAG, "CMD_COMMISSION eui64=%s pskd=%s timeout=%us", hex, pskd, timeout_s);
 }
 
 void ipc_cmd_sensor_del(const uint8_t eui64[8])

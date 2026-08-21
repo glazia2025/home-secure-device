@@ -23,10 +23,10 @@
 static const char *TAG = "WEBRTC_CAM";
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
-#define VIDEO_WIDTH    640
-#define VIDEO_HEIGHT   480
+#define VIDEO_WIDTH    320
+#define VIDEO_HEIGHT   240
 #define VIDEO_FPS      30
-#define VIDEO_BITRATE  800000
+#define VIDEO_BITRATE  600000
 
 /* H264 output buffer: worst-case raw frame size (2 bytes/px for YUV422) */
 #define H264_OUT_BUF_SIZE  (VIDEO_WIDTH * VIDEO_HEIGHT * 2)
@@ -435,7 +435,9 @@ static void video_task_fn(void *arg)
             esp_peer_send_video(s_peer, &vf);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000 / VIDEO_FPS));
+        /* esp_camera_fb_get() already blocks until the next sensor frame, so the
+         * loop is paced by real capture/encode time; just yield to the scheduler. */
+        vTaskDelay(1);
     }
 
     heap_caps_free(h264_buf);

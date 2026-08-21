@@ -19,6 +19,9 @@
 #define IPC_EVT_SENSOR_JOINED  0x83  /* eui64[8] */
 #define IPC_EVT_SENSOR_DATA    0x84  /* eui64[8] + JSON string (null-term) */
 #define IPC_EVT_COMM_FAILED    0x85  /* eui64[8] */
+#define IPC_EVT_SENSOR_LOST    0x86  /* eui64[8] — child aged out of the Thread child table */
+#define IPC_EVT_SENSOR_ONLINE  0x87  /* eui64[8] — child (re)attached to the Thread child table */
+#define IPC_EVT_CHILD_LIST     0x88  /* N × extaddr[8] — snapshot of the current Thread child table */
 
 typedef void (*ipc_cmd_cb_t)(uint8_t type, const uint8_t *payload, uint16_t len);
 
@@ -30,3 +33,6 @@ void ipc_send_net_down(void);
 void ipc_send_sensor_joined(const uint8_t eui64[8]);
 void ipc_send_sensor_data(const uint8_t eui64[8], const char *json);
 void ipc_send_comm_failed(const uint8_t eui64[8]);
+void ipc_send_sensor_lost(const uint8_t eui64[8]);
+void ipc_send_sensor_online(const uint8_t eui64[8]);
+void ipc_send_child_list(const uint8_t *extaddrs, int n_children);

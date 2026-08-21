@@ -4,7 +4,7 @@
 # Keep gitignore
 !.gitignore
 
-# Allow only these two projects
+# Allow only these projects
 !hub_firmware/
 !hub_firmware/glazia_hub/
 !hub_firmware/glazia_hub/**
@@ -16,6 +16,19 @@
 !cam_firmware/
 !cam_firmware/cam_ov5640/
 !cam_firmware/cam_ov5640/**
+
+# nrf_test branch: allow nRF/Thread firmware projects and new hub files
+!gz_v1/
+!gz_v1/hub_firmware/
+!gz_v1/hub_firmware/**
+!gz_v1/sensor_firmware/
+!gz_v1/sensor_firmware/**
+!gz_v1/cam_firmware/
+!gz_v1/cam_firmware/**
+!gz_v1/nrf_hub_firmware/
+!gz_v1/nrf_hub_firmware/**
+!gz_v1/nrf_sensor_firmware/
+!gz_v1/nrf_sensor_firmware/**
 
 # Never track docs/agent/code clutter
 *.md

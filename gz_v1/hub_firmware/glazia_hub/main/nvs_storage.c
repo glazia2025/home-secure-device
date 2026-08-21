@@ -357,21 +357,23 @@ void nvs_prov_clear(void)
 // ── Thread sensor namespace ────────────────────────────────────────────────
 
 void nvs_save_thread_sensors(const uint8_t eui64s[][8], const char names[][32],
-                              const char zones[][32], int count)
+                              const char zones[][32], const bool enabled[], int count)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_THREAD, NVS_READWRITE, &h) != ESP_OK) return;
 
     nvs_set_u8(h, "th_cnt", (uint8_t)count);
     for (int i = 0; i < count; i++) {
-        char eui_key[16], name_key[16], zone_key[16];
+        char eui_key[16], name_key[16], zone_key[16], en_key[16];
         snprintf(eui_key,  sizeof(eui_key),  "th_eui64_%d", (uint8_t)i);
         snprintf(name_key, sizeof(name_key), "th_name_%d",  (uint8_t)i);
         snprintf(zone_key, sizeof(zone_key), "th_zone_%d",  (uint8_t)i);
+        snprintf(en_key,   sizeof(en_key),   "th_en_%d",    (uint8_t)i);
 
         nvs_set_blob(h, eui_key,  eui64s[i], 8);
         nvs_set_str(h,  name_key, names ? names[i] : "");
         nvs_set_str(h,  zone_key, zones ? zones[i] : "");
+        nvs_set_u8(h,   en_key,   (uint8_t)(enabled ? enabled[i] : true));
     }
 
     nvs_commit(h);
@@ -380,7 +382,7 @@ void nvs_save_thread_sensors(const uint8_t eui64s[][8], const char names[][32],
 }
 
 int nvs_load_thread_sensors(uint8_t eui64s[][8], char names[][32],
-                             char zones[][32], int max_count)
+                             char zones[][32], bool enabled[], int max_count)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_THREAD, NVS_READONLY, &h) != ESP_OK) return 0;
@@ -391,10 +393,11 @@ int nvs_load_thread_sensors(uint8_t eui64s[][8], char names[][32],
 
     int loaded = 0;
     for (int i = 0; i < count; i++) {
-        char eui_key[16], name_key[16], zone_key[16];
+        char eui_key[16], name_key[16], zone_key[16], en_key[16];
         snprintf(eui_key,  sizeof(eui_key),  "th_eui64_%d", (uint8_t)i);
         snprintf(name_key, sizeof(name_key), "th_name_%d",  (uint8_t)i);
         snprintf(zone_key, sizeof(zone_key), "th_zone_%d",  (uint8_t)i);
+        snprintf(en_key,   sizeof(en_key),   "th_en_%d",    (uint8_t)i);
 
         size_t eui_len = 8;
         if (nvs_get_blob(h, eui_key, eui64s[loaded], &eui_len) != ESP_OK) continue;
@@ -409,10 +412,15 @@ int nvs_load_thread_sensors(uint8_t eui64s[][8], char names[][32],
             if (nvs_get_str(h, zone_key, zones[loaded], &len) != ESP_OK)
                 zones[loaded][0] = '\0';
         }
+        if (enabled) {
+            uint8_t en = 1;   /* missing key (old firmware) => enabled */
+            nvs_get_u8(h, en_key, &en);
+            enabled[loaded] = (en != 0);
+        }
         loaded++;
     }
 
     nvs_close(h);
-    ESP_LOGI(TAG, "Loaded %d Thread sensor(s) from NVS", loaded);
+    ESP_LOGD(TAG, "Loaded %d Thread sensor(s) from NVS", loaded);
     return loaded;
 }
