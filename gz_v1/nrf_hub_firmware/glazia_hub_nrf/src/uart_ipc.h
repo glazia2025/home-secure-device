@@ -11,6 +11,7 @@
 #define IPC_CMD_NET_STATUS  0x02
 #define IPC_CMD_COMMISSION  0x03  /* eui64[8] + pskd[9 null-term] + timeout_s[u16-LE] */
 #define IPC_CMD_SENSOR_DEL  0x04  /* eui64[8] */
+#define IPC_CMD_CHILD_POLL  0x05  /* no payload — reply with IPC_EVT_CHILD_LIST (current child table) */
 
 /* Events sent to ESP32-S3 */
 #define IPC_EVT_PONG           0x80  /* no payload — reply to IPC_CMD_PING */

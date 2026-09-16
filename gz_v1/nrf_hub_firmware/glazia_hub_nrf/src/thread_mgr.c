@@ -88,39 +88,38 @@ static void neighbor_cb(otNeighborTableEvent event, const otNeighborTableEntryIn
     }
 }
 
-/* ── Active child-table poll ───────────────────────────────────────────────────
- * The passive neighbor_cb (CHILD_REMOVED) proved unreliable, so we ALSO read the child table
- * directly on a timer and ship the full snapshot to the ESP. Reading the table depends only on
- * OpenThread's child-timeout eviction (what actually removes a dead SED), not on any event
- * callback. Each SED data-polls every 1 s to stay attached, so a present child = a live sensor;
- * no extra radio/battery — this only reads existing state and sends it over the on-board UART. */
-#define CHILD_POLL_MS 3000
-
-static void child_monitor_thread(void *a, void *b, void *c)
+/* ── On-demand child-table snapshot ─────────────────────────────────────────────
+ * Reads the current Thread child table (the authoritative liveness source for the ESP watchdog)
+ * into `out` as N × 8-byte MLE ext addresses and returns N. Reading the table depends only on
+ * OpenThread's own child-timeout eviction (what actually removes a dead SED), not on any event
+ * callback — so a present child = a live sensor. The ESP pulls this via CMD_CHILD_POLL exactly
+ * when it needs to know (slow heartbeat, on toggle, after a join); we no longer push it on a
+ * blind 3 s timer (that spammed the UART and raced the ESP's liveness window). */
+int thread_mgr_child_snapshot(uint8_t *out, int max_children)
 {
-    static uint8_t list[32 * 8];
-    while (1) {
-        k_sleep(K_MSEC(CHILD_POLL_MS));
-        if (!s_ctx) continue;
+    if (!s_ctx || !out || max_children <= 0) return 0;
 
-        int count = 0;
-        openthread_api_mutex_lock(s_ctx);
-        uint16_t max = otThreadGetMaxAllowedChildren(s_ctx->instance);
-        for (uint16_t i = 0; i < max && count < 32; i++) {
-            otChildInfo info;
-            if (otThreadGetChildInfoByIndex(s_ctx->instance, i, &info) != OT_ERROR_NONE) continue;
-            memcpy(&list[count * 8], info.mExtAddress.m8, 8);
-            count++;
-        }
-        openthread_api_mutex_unlock(s_ctx);
-
-        LOG_INF("child poll: %d present", count);
-        ipc_send_child_list(list, count);
+    int count = 0;
+    openthread_api_mutex_lock(s_ctx);
+    uint16_t max = otThreadGetMaxAllowedChildren(s_ctx->instance);
+    for (uint16_t i = 0; i < max && count < max_children; i++) {
+        otChildInfo info;
+        if (otThreadGetChildInfoByIndex(s_ctx->instance, i, &info) != OT_ERROR_NONE) continue;
+        memcpy(&out[count * 8], info.mExtAddress.m8, 8);
+        count++;
     }
+    openthread_api_mutex_unlock(s_ctx);
+    return count;
 }
 
-static K_THREAD_STACK_DEFINE(s_child_stack, 4096);
-static struct k_thread s_child_thread;
+/* Reply to CMD_CHILD_POLL: snapshot the child table and ship it to the ESP. */
+void thread_mgr_report_children(void)
+{
+    static uint8_t list[32 * 8];
+    int count = thread_mgr_child_snapshot(list, 32);
+    LOG_INF("child poll (on demand): %d present", count);
+    ipc_send_child_list(list, count);
+}
 
 static void state_cb(otChangedFlags flags, void *ctx)
 {
@@ -199,10 +198,8 @@ void thread_mgr_init(void)
     otThreadRegisterNeighborTableCallback(s_ctx->instance, neighbor_cb);
     openthread_api_mutex_unlock(s_ctx);
 
-    /* Active child-table poller: authoritative liveness source for the ESP watchdog. */
-    k_thread_create(&s_child_thread, s_child_stack, K_THREAD_STACK_SIZEOF(s_child_stack),
-                    child_monitor_thread, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
-    k_thread_name_set(&s_child_thread, "child_mon");
+    /* Child-table liveness is now pull-based: the ESP requests a snapshot via CMD_CHILD_POLL
+     * (see thread_mgr_report_children). No blind background poller. */
 
     LOG_INF("thread_mgr ready");
 }

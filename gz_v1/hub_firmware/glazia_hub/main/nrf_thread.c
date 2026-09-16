@@ -73,10 +73,9 @@ typedef struct {
 
 #define WD_MAX             10
 #define WD_RECONNECT_TRIES 3
-#define WD_RETRY_MS        30000   /* spacing between the 3 reconnect nudges — give each attempt time */
+#define WD_RETRY_MS        15000   /* give-up window per reconnect nudge — a live sensor re-attaches in ~10-15s */
 #define WD_TICK_MS         2000    /* watchdog cadence — react promptly once a sensor drops */
-#define WD_OFFLINE_MS      8000    /* absence from the child poll before declaring a sensor lost */
-#define WD_HB_LOG_MS       10000   /* throttle for the "monitored sensors" liveness log */
+#define WD_OFFLINE_MS      8000    /* absence from the child poll before declaring a sensor lost (the "wait T" knob) */
 
 static wd_entry_t        s_wd[WD_MAX];
 static SemaphoreHandle_t s_wd_mutex;
@@ -214,11 +213,11 @@ static void wd_sync_from_nvs(void)
 
 static void watchdog_task(void *arg)
 {
-    TickType_t last_hb_log = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(WD_TICK_MS));
         wd_sync_from_nvs();   /* monitor every enabled sensor, not just ones seen in the child table */
         TickType_t now = xTaskGetTickCount();
+        bool summary_force = false;   /* set on a dead notif so the summary reprints once as confirmation */
 
         for (int i = 0; i < WD_MAX; i++) {
             uint8_t eui[8];
@@ -262,12 +261,15 @@ static void watchdog_task(void *arg)
                 ESP_LOGE(TAG, "sensor %s offline (reconnect failed) — notifying", hex);
                 api_send_event(hex, "sensor_offline", "critical", "{}");
                 display_set_thread_sensor_offline(eui, true);
+                summary_force = true;   /* reprint the summary once as confirmation */
             }
         }
 
-        /* Throttled one-line summary: how many enabled sensors are in the mesh vs missing. */
-        if ((int32_t)(now - last_hb_log) >= (int32_t)pdMS_TO_TICKS(WD_HB_LOG_MS)) {
-            last_hb_log = now;
+        /* Event-driven one-line summary: how many enabled sensors are in the mesh vs missing.
+         * Prints only when the (connected, in_mesh, missing) picture changes — i.e. on boot, on a
+         * toggle (connected shifts), when a sensor drops/recovers, or once after a dead notif
+         * (summary_force). Steady state stays silent. */
+        {
             int connected = 0, in_mesh = 0, missing = 0;
             xSemaphoreTake(s_wd_mutex, portMAX_DELAY);
             for (int i = 0; i < WD_MAX; i++) {
@@ -278,8 +280,13 @@ static void watchdog_task(void *arg)
                 else                       missing++;
             }
             xSemaphoreGive(s_wd_mutex);
-            ESP_LOGI(TAG, "sensors: %d connected, %d in mesh, %d not in mesh",
-                     connected, in_mesh, missing);
+
+            static int pc = -1, pm = -1, px = -1;   /* -1 seeds a first print on boot */
+            if (summary_force || connected != pc || in_mesh != pm || missing != px) {
+                pc = connected; pm = in_mesh; px = missing;
+                ESP_LOGI(TAG, "sensors: %d connected, %d in mesh, %d not in mesh",
+                         connected, in_mesh, missing);
+            }
         }
     }
 }

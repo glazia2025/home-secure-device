@@ -58,6 +58,11 @@ static void on_ipc_cmd(uint8_t type, const uint8_t *payload, uint16_t len)
         if (len >= 8) thread_mgr_remove_joiner(payload);
         break;
 
+    case IPC_CMD_CHILD_POLL:
+        led_hub_flash_rx();
+        thread_mgr_report_children();   /* reply with the current child-table snapshot */
+        break;
+
     default:
         LOG_WRN("unknown IPC cmd 0x%02x", type);
     }

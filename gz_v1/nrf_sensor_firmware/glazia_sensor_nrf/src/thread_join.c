@@ -14,7 +14,15 @@
 
 LOG_MODULE_REGISTER(glazia_sensor_nrf_join, LOG_LEVEL_INF);
 
-#define RETRY_DELAY_S   30
+/* Joiner retry backoff. First-time pairing, the sensor starts the Joiner at boot — almost always
+ * BEFORE the hub's commissioner window is open (the hub only commissions after the phone provisions
+ * the sensor on the server). So the first attempt fails and we retry. A flat 30 s retry meant the
+ * sensor sat idle for a whole cycle even though the commissioner opened seconds later — the ~28 s
+ * first-pairing delay. Instead retry quickly, then back off (2→4→8… capped) so we catch the
+ * commissioner within a few seconds while a sensor with no hub in range still settles to a low,
+ * battery-friendly scan rate. */
+#define RETRY_MIN_S     2
+#define RETRY_MAX_S     15
 /* Parent evicts us (fires CHILD_REMOVED at the hub) after this many s of missed 1 s data-polls —
  * i.e. the hub's dead-sensor detection latency. Test value 10 s (10 missed polls); widen later. */
 #define CHILD_TIMEOUT_S 10
@@ -89,6 +97,8 @@ static void attach_from_stored(struct openthread_context *ctx)
  * to be open (Add Sensor). On success the dataset is persisted for subsequent boots. */
 static void run_joiner(struct openthread_context *ctx)
 {
+    int retry_s = RETRY_MIN_S;   /* grows 2→4→8… capped at RETRY_MAX_S on each failed attempt */
+
     while (1) {
         openthread_api_mutex_lock(ctx);
         otInstance *ot = ctx->instance;
@@ -99,8 +109,9 @@ static void run_joiner(struct openthread_context *ctx)
         openthread_api_mutex_unlock(ctx);
 
         if (start_err != OT_ERROR_NONE) {
-            LOG_ERR("otJoinerStart error %d — retry in %ds", start_err, RETRY_DELAY_S);
-            k_sleep(K_SECONDS(RETRY_DELAY_S));
+            LOG_ERR("otJoinerStart error %d — retry in %ds", start_err, retry_s);
+            k_sleep(K_SECONDS(retry_s));
+            retry_s = MIN(retry_s * 2, RETRY_MAX_S);
             continue;
         }
 
@@ -117,8 +128,9 @@ static void run_joiner(struct openthread_context *ctx)
             return;
         }
 
-        LOG_WRN("Join failed (%d) — retry in %ds", s_join_result, RETRY_DELAY_S);
-        k_sleep(K_SECONDS(RETRY_DELAY_S));
+        LOG_WRN("Join failed (%d) — retry in %ds", s_join_result, retry_s);
+        k_sleep(K_SECONDS(retry_s));
+        retry_s = MIN(retry_s * 2, RETRY_MAX_S);
     }
 }
 
