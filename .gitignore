@@ -30,6 +30,12 @@
 !gz_v1/nrf_sensor_firmware/
 !gz_v1/nrf_sensor_firmware/**
 
+
+# allow gz_v2
+!gz_v2/
+!gz_v2/**
+
+
 # Never track docs/agent/code clutter
 *.md
 **/*.md
