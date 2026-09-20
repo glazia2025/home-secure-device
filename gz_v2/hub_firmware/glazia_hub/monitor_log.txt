@@ -1,0 +1,3 @@
+Executing action: monitor
+Running idf_monitor in directory /home/xio/Desktop/glazia_work/glazia-prototype/gz_temp/hub_firmware/glazia_hub
+Executing "/home/xio/.espressif/python_env/idf5.3_py3.10_env/bin/python /home/xio/esp/esp-idf-5.3/tools/idf_monitor.py -p /dev/ttyACM0 -b 115200 --toolchain-prefix riscv32-esp-elf- --target esp32p4 --revision 1 --decode-panic backtrace /home/xio/Desktop/glazia_work/glazia-prototype/gz_temp/hub_firmware/glazia_hub/build/glazia_hub.elf -m '/home/xio/.espressif/python_env/idf5.3_py3.10_env/bin/python' '/home/xio/esp/esp-idf-5.3/tools/idf.py' '-p' '/dev/ttyACM0'"...

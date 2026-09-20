@@ -34,6 +34,7 @@
 # allow gz_v2
 !gz_v2/
 !gz_v2/**
+gz_v2/**/*.txt
 
 
 # Never track docs/agent/code clutter

@@ -1,0 +1,46 @@
+## IDF Component Manager Manifest File — ESP32-P4 hub (gz_temp)
+dependencies:
+  ## ESP32-P4 + esp-hosted need a recent IDF.
+  idf:
+    version: '>=5.3.0'
+
+  espressif/esp_websocket_client: '*'
+
+  ## Wireless comes from the on-board ESP32-C6 over ESP-Hosted (SDIO).
+  ## esp_wifi_remote provides the drop-in esp_wifi.h / esp_event Wi-Fi API on the
+  ## P4 host and pulls in esp_hosted as the transport to the C6 slave.
+  espressif/esp_wifi_remote: '*'
+  ## Pin esp_hosted to the 2.12.x line (last before 3.0). esp_hosted 3.0 REMOVED
+  ## the hosted-BT Kconfig symbols this project's sdkconfig.defaults uses
+  ## (CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE / _NIMBLE_HCI_VHCI) and hard-fails
+  ## configure with a migration error. 2.12.x keeps the known-good NimBLE-over-
+  ## VHCI wiring. Re-bump only after migrating the BT Kconfig per esp-hosted 3.0.
+  espressif/esp_hosted: '~2.12.0'
+
+  ## Native OV5647 MIPI-CSI camera + hardware H.264 + WebRTC on the P4 itself
+  ## (replaces the old external camera co-processor over UART).
+  ##  - esp_cam_sensor: OV5647 driver + SCCB detect/format (pulls in esp_sccb_intf).
+  ##  - esp_h264: hardware H.264 encoder (P4 rev<3 ingests UYVY directly).
+  ##  - esp_peer + esp_libsrtp: the WebRTC peer (esp-webrtc-solution), same API the
+  ##    gz_v1 camera firmware used.
+  espressif/esp_cam_sensor: '^0.5.1'
+  espressif/esp_h264: '*'
+  ## Pinned to 1.5.0 (the version proven in gz_v1). 1.5.4 ADDED an RTCP "PLI" handler
+  ## (ESP_PEER_STATE_VIDEO_PLI_RECEIVED = state 17) whose first real-world invocation — a
+  ## viewer PLI after a packet-loss hiccup — corrupts memory and crashes the send task with a
+  ## wild-PC instruction fault. 1.5.0 has no PLI handler, so the path can't be hit. Re-bump only
+  ## after a future esp_peer release fixes the PLI path AND it's re-verified on hardware under loss.
+  espressif/esp_peer: '==1.5.0'
+  espressif/esp_libsrtp: '^1.0.0'
+
+  ## Native MIPI-DSI touch display driven directly by the P4 (Waveshare
+  ## 7-DSI-TOUCH-A: ILI9881C 720x1280 panel + GT911 capacitive touch). Replaces
+  ## the ex-S3 display coprocessor + UART bridge. LVGL is rendered on-chip.
+  ##  - esp_lvgl_port: glue between esp_lcd (DSI) / esp_lcd_touch and LVGL. Keep
+  ##    LVGL pinned to the 8.x line — the ported UI uses the LVGL v8 API.
+  ##  - esp_lcd_ili9881c: MIPI-DSI DPI panel vendor driver for the Waveshare panel.
+  ##  - esp_lcd_touch_gt911: GT911 I2C capacitive touch (polling; INT not routed).
+  lvgl/lvgl: '^8.3.0'
+  espressif/esp_lvgl_port: '^2.0.0'
+  waveshare/esp_lcd_ili9881c: '*'
+  espressif/esp_lcd_touch_gt911: '*'

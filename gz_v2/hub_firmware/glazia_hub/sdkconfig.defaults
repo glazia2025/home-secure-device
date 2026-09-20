@@ -1,0 +1,123 @@
+# ── gz_temp ESP32-P4 hub — build defaults ─────────────────────────────────
+# Minimal, hand-written defaults (unlike the S3 hub, which checked in a full
+# generated sdkconfig). `idf.py set-target esp32p4` regenerates the rest.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# ── Flash (FireBeetle 2 ESP32-P4 = 16 MB) ─────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# ── Custom partition table (same layout as the S3 hub) ────────────────────
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ── Console on USB-Serial-JTAG — frees UART0..UART4 for peripherals ───────
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+
+# ── PSRAM (P4 has 32 MB) ──────────────────────────────────────────────────
+CONFIG_SPIRAM=y
+
+# ── Bluetooth: NimBLE host on the P4, controller on the C6 via ESP-Hosted ─
+# The P4 has no on-chip BLE controller, so it is disabled here; NimBLE talks
+# HCI to the C6 over the ESP-Hosted VHCI transport (SDIO). NOT the physical-UART
+# HCI transport — that grabs UART1 (used by the camera) + pins 4/5 (R307
+# fingerprint) and aborts in uart_driver_install ("driver already installed"),
+# rebooting the hub the moment provisioning starts.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
+# Physical-UART HCI transport OFF; route HCI over ESP-Hosted VHCI instead.
+# CONFIG_BT_NIMBLE_TRANSPORT_UART is not set
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+# Pin co-processor target to C6 — omitting this lets any reconfigure default to H2,
+# which breaks the SPI handshake (C6 slave firmware won't respond to H2 packets).
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
+
+# ── Wi-Fi via esp_wifi_remote → esp-hosted → ESP32-C6 (SDIO) ──────────────
+# esp_wifi_remote selects the hosted backend; the SDIO transport + C6 pins are
+# pinned below via the ESP-Hosted board preset (see the SDIO block near EOF).
+CONFIG_ESP_WIFI_REMOTE_ENABLED=y
+CONFIG_WIFI_RMT_CACHE_TX_BUFFER_NUM=32
+
+# RAW-throughput transport benchmark is a DEBUG feature (Kconfig default n; esp_hosted
+# stats.h: "disabled on production"). It spawns an infinite no-delay flood task on the SDIO
+# transport (raw_tp_tx_task) and compiles raw-TP hooks into the hot RX path; combined with the
+# WebRTC video TX burst it corrupts an internal-RAM FreeRTOS list -> Core-1 vListInsert panic in
+# sdio_write_task. MUST stay off in production.
+CONFIG_ESP_HOSTED_RAW_THROUGHPUT_TRANSPORT=n
+
+# ── Native OV5647 MIPI-CSI camera + WebRTC (camera_csi.c / webrtc_stream.c) ─
+# Compile the OV5647 sensor driver into esp_cam_sensor's detect array so the
+# runtime probe finds it on the CSI bus.
+CONFIG_CAMERA_OV5647=y
+# esp_peer uses DTLS-SRTP to secure the WebRTC media (RTP/RTCP).
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
+
+# ── Native MIPI-DSI LCD (ILI9881C 720x1280) + LVGL (display.c / ui/) ───────
+# The DSI DMA path benefits from an IRAM-safe ISR.
+# CONFIG_LCD_DSI_ISR_IRAM_SAFE is not set
+# LVGL: RGB565. Unlike the S3 (SPI ILI9341, which needed LV_COLOR_16_SWAP=y),
+# the DSI DPI panel takes native RGB565 — leave the byte-swap OFF.
+CONFIG_LV_COLOR_DEPTH_16=y
+# CONFIG_LV_COLOR_16_SWAP is not set
+# QR code widget: the register screen renders the hub-MAC QR (ui/screens.c).
+CONFIG_LV_USE_QRCODE=y
+# LVGL draw buffers live in PSRAM (720x1280 is far too big for internal RAM).
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# Montserrat font range for the re-scaled 720x1280 UI (small legacy sizes kept
+# so the ui/fonts.h aliases resolve to real glyphs instead of degrading).
+CONFIG_LV_FONT_MONTSERRAT_8=y
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_22=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_26=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_30=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+CONFIG_LV_FONT_MONTSERRAT_42=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# ── High Speed PSRAM (fixes MIPI DSI bandwidth starvation) ────────────────
+# ESP32-P4 Kconfig has SPIRAM_SPEED_200M (not 120M — that's S3 only).
+# 200MHz is required: 720x1280@60Hz panel scan needs ~110 MB/s of PSRAM bandwidth.
+# At 20MHz (default) the panel framebuffer is starved → solid cyan screen.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# ── ESP-Hosted C6 co-processor: 1 kHz tick to avoid bus jitter ────────────
+# ESP-Hosted logs a warning at boot if FREERTOS_HZ < 1000; the P4↔C6 link
+# for WiFi+BLE is sensitive to coarse tick timing.
+CONFIG_FREERTOS_HZ=1000
+
+# ── ESP-Hosted C6 over SDIO (DFR1172 FireBeetle 2 ESP32-P4 onboard C6) ─────
+# CRITICAL: the onboard ESP32-C6 is wired to the P4 via SDIO, NOT SPI:
+#   CLK=18 CMD=19 D0-D3=14/15/16/17 EN(reset)=54  (per DFRobot DFR1172 wiki).
+# The Espressif P4 function-board preset carries exactly these SDIO pin
+# defaults for a C6 slave, so selecting it + forcing the SDIO host interface
+# gives the correct wiring with no per-pin overrides. (The previous SPI setup
+# on GPIO 7/8/9/10/11/12 clashed with the I2C touch bus + PCM mic and the C6
+# never answered the handshake.)
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+
+# SDIO RX mode: streaming=y matches p4_wifi ground truth.
+# PSRAM bus pressure from panel+SDIO is managed by keeping the LVGL draw buffer in
+# internal SRAM (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA), off the PSRAM AXI bus.
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
