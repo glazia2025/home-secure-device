@@ -48,6 +48,33 @@
 #define UI_SETUP_PILL               0xE7E2D5   /* small "Setup" pill (from spec) */
 #define UI_SETUP_PILL_TEXT          0x57534E
 
+/* ── Light "Glazia" dashboard tokens (new design — dashboard.docx §3) ────────
+ * The dashboard + every data screen now render in this light theme, over the
+ * same warm interior photo (img_welcome_bg) as the welcome/QR screens. The dark
+ * Ocean Night tokens above are retained only for reference/back-compat. */
+#define UI_D_HEADING        0x1A2024   /* card heading (TEMPERATURE / HUMIDITY)  */
+#define UI_D_VALUE          0x0F1725   /* primary metric value                    */
+#define UI_D_VALUE_ALT      0x101A2B   /* AQI numeric value                       */
+#define UI_D_MUTED          0x8C9296   /* secondary label ("Living Room")         */
+#define UI_D_MICRO          0x8A959B   /* micro / mono caption                    */
+#define UI_D_SUBTLE         0x726E69   /* page subtitle over the photo            */
+#define UI_D_TRACK          0xE7EBEB   /* neutral gauge / thermometer track       */
+#define UI_D_CARD_BORDER    0xE5EBE8   /* hairline card border                    */
+#define UI_D_STAT_SURF      0xF6F7F6   /* min/avg/max stat tile surface           */
+
+#define UI_D_GREEN          0x17AE82   /* success / healthy                       */
+#define UI_D_GREEN_SURF     0xEAF9F3
+#define UI_D_AQI_SURF       0xF0FAF5
+#define UI_D_AMBER          0xF1A31F   /* moderate                                */
+#define UI_D_AMBER_TEXT     0xC68413
+#define UI_D_AMBER_SURF     0xFFF6E7
+#define UI_D_RED            0xFF6254   /* hot                                      */
+#define UI_D_RED_HI         0xFF6A5C
+#define UI_D_RED_SURF       0xFFF0EC
+#define UI_D_BLUE           0x2C93F5   /* humidity                                */
+#define UI_D_BLUE_HI        0x57A6F8
+#define UI_D_BLUE_SURF      0xECF6FF
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -72,6 +99,11 @@ void ui_style_glass_light(lv_obj_t *obj, lv_coord_t radius);
 void ui_style_toggle(lv_obj_t *obj);
 void ui_style_arc_track(lv_obj_t *obj, uint32_t indicator_color);
 void ui_style_bar_track(lv_obj_t *obj, uint32_t indicator_color);
+/* Light "Glazia" dashboard helpers. */
+void ui_style_card_light(lv_obj_t *obj, lv_coord_t radius);
+void ui_style_status_pill_light(lv_obj_t *obj, uint32_t text_color, uint32_t surface);
+void ui_style_metric_arc_light(lv_obj_t *obj, uint32_t indicator_color, lv_coord_t width);
+void ui_style_stat_cell(lv_obj_t *obj);
 
 #ifdef __cplusplus
 }

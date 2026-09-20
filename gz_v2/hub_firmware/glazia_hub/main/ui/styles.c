@@ -200,3 +200,60 @@ void ui_style_bar_track(lv_obj_t *obj, uint32_t indicator_color)
     lv_obj_set_style_bg_opa(obj, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_radius(obj, 3, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 }
+
+/* ── Light "Glazia" dashboard helpers ───────────────────────────────────────
+ * Translucent white cards over the warm photo background, matching the
+ * welcome/QR frosted panels but a touch more opaque for dense data legibility. */
+void ui_style_card_light(lv_obj_t *obj, lv_coord_t radius)
+{
+    if (!obj) return;
+    lv_obj_set_style_bg_color(obj, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(obj, 235, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(obj, lv_color_hex(UI_D_CARD_BORDER), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(obj, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(obj, radius, LV_PART_MAIN | LV_STATE_DEFAULT);
+    clear_base(obj);
+}
+
+/* Soft tinted status pill (Hot / Comfortable / Moderate …) — surface fill,
+ * colored text set on the child label, no border. */
+void ui_style_status_pill_light(lv_obj_t *obj, uint32_t text_color, uint32_t surface)
+{
+    if (!obj) return;
+    (void)text_color;
+    lv_obj_set_style_bg_color(obj, lv_color_hex(surface), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(obj, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
+    clear_base(obj);
+}
+
+/* Thin rounded metric ring (AQI gauge, fingerprint spinner) on a light track. */
+void ui_style_metric_arc_light(lv_obj_t *obj, uint32_t indicator_color, lv_coord_t width)
+{
+    if (!obj) return;
+    lv_obj_set_style_arc_width(obj, width, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_rounded(obj, true, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(obj, lv_color_hex(UI_D_TRACK), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_opa(obj, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(obj, width, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_rounded(obj, true, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(obj, lv_color_hex(indicator_color), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_opa(obj, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(obj, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
+}
+
+/* Small neutral tile for the MIN/AVG/MAX-24H stat cells. */
+void ui_style_stat_cell(lv_obj_t *obj)
+{
+    if (!obj) return;
+    lv_obj_set_style_bg_color(obj, lv_color_hex(UI_D_STAT_SURF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(obj, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_NONE, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(obj, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    clear_base(obj);
+}

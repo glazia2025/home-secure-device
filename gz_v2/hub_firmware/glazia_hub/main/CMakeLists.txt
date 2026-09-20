@@ -11,6 +11,7 @@ idf_component_register(
         "door_lock.c"
         "hub_sensor.c"
         "aqi_sensor.c"
+        "metrics_history.c"
         "hub_control_ws.c"
         "camera_csi.c"
         "webrtc_stream.c"

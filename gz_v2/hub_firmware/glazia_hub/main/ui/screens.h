@@ -82,6 +82,17 @@ typedef struct _objects_t {
     lv_obj_t *home_time;
     lv_obj_t *home_date;
     lv_obj_t *strip_date;
+    /* New light-dashboard widgets (Glazia redesign). Some legacy handles above
+     * are repurposed by the new layout: temp_arc = thermometer marker pill,
+     * hum_bar = humidity lv_chart, temp_img/hum_img/aqi_dot = pill dots. */
+    lv_obj_t *aqi_pm25;        /* PM2.5 tile value (µg/m³)            */
+    lv_obj_t *temp_stat_min;
+    lv_obj_t *temp_stat_avg;
+    lv_obj_t *temp_stat_max;
+    lv_obj_t *hum_stat_min;
+    lv_obj_t *hum_stat_avg;
+    lv_obj_t *hum_stat_max;
+    lv_obj_t *hum_marker;      /* floating "36%" bubble on the wave chart */
     /* ── settings_menu widgets ──────────────────────────────── */
     lv_obj_t *settings_menu_cont;
     lv_obj_t *obj13;
@@ -131,6 +142,16 @@ typedef struct _objects_t {
 } objects_t;
 
 extern objects_t objects;
+
+/* Temperature thermometer geometry (card-local Y range of the marker pill's
+ * top-left, and the mapped temperature range). Shared with display.c so the
+ * marker can be positioned from the live temperature. */
+#define DASH_TEMP_MIN     15
+#define DASH_TEMP_MAX     40
+#define DASH_THERMO_YTOP  110   /* marker Y at MAX temp (top / hottest)   */
+#define DASH_THERMO_YBOT  330   /* marker Y at MIN temp (bottom / coldest) */
+/* Humidity wave chart resolution (points shown = 24 h of 30-min buckets). */
+#define DASH_HUM_POINTS   48
 
 void create_screen_hub_register_welcome(void);
 void tick_screen_hub_register_welcome(void);

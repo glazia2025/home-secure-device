@@ -22,11 +22,13 @@
 #include "sensor_pairing.h"  /* sensor_pairing_open_window */
 #include "nrf_thread.h"      /* nrf_thread_set_sensor_enabled / _is_sensor_offline */
 #include "nvs_storage.h"     /* nvs_load_thread_sensors */
+#include "metrics_history.h" /* 24h temp/hum history for stat cells + wave chart */
 #include "display_power.h"   /* shared MIPI D-PHY LDO + I2C bus (with the camera) */
 #include "ui/ui.h"
 #include "ui/screens.h"
 #include "ui/images.h"
 #include "ui/styles.h"
+#include "ui/fonts.h"
 #include "misc/lv_area.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -71,11 +73,12 @@ static const char *TAG = "DISPLAY";
 #define GT911_INT_GPIO   (-1)   /* not routed → GT911 runs in polling mode */
 
 /* ── Display-side theme aliases ─────────────────────────────────────────── */
-#define C_CYAN_U32   UI_COLOR_VIOLET
-#define C_AMBER_U32  UI_COLOR_AMBER
-#define C_RED_U32    UI_COLOR_RED
-#define C_GREEN_U32  UI_COLOR_GREEN
-#define C_T2_U32     UI_COLOR_TEXT_SECONDARY
+/* Light "Glazia" theme aliases (dashboard + data screens). */
+#define C_CYAN_U32   UI_D_BLUE
+#define C_AMBER_U32  UI_D_AMBER
+#define C_RED_U32    UI_D_RED
+#define C_GREEN_U32  UI_D_GREEN
+#define C_T2_U32     UI_D_MUTED
 #define C_AQI_NOMINAL_U32   0x84CC16
 #define C_AQI_POOR_U32      0xF97316
 #define C_AQI_UNHEALTHY_U32 0xFF8247
@@ -122,6 +125,7 @@ typedef struct {
     float hum;
     bool has_aqi;
     float aqi;
+    uint16_t pm25;
     char aqi_state[16];
     char home_name[64];
     char user_name[64];
@@ -143,7 +147,7 @@ static void refresh_sensor_nodes_locked(void);
 static void set_hub_connection_status_locked(bool online);
 static void update_temp_pill_locked(float temp);
 static void update_hum_pill_locked(float hum);
-static void set_aqi_value_locked(float aqi, const char *state);
+static void set_aqi_value_locked(float aqi, const char *state, uint16_t pm25);
 static void update_home_datetime_locked(void);
 static void cache_copy(char *dst, size_t dst_size, const char *src);
 static void cache_lock(void);
@@ -155,7 +159,6 @@ static void set_cached_welcome_text_locked(void);
 static const char *fingerprint_phase_for_title(const char *title);
 static const char *fingerprint_instruction_for_phase(const char *phase);
 static const char *fingerprint_message_normalize(const char *message);
-static void align_dashboard_value_locked(lv_obj_t *value, lv_obj_t *arc);
 static void align_fingerprint_text_locked(void);
 static void show_fingerprint_screen_locked(const char *title, const char *prompt);
 static bool display_is_ready(void);
@@ -669,15 +672,6 @@ static void set_cached_welcome_text_locked(void)
     set_welcome_text_locked(user_name);
 }
 
-static void set_status_pill_style_locked(lv_obj_t *pill, uint32_t color, uint32_t bg)
-{
-    if (!pill) return;
-    lv_obj_set_style_bg_color(pill, lv_color_hex(bg), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(pill, 150, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(pill, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_opa(pill, 170, LV_PART_MAIN | LV_STATE_DEFAULT);
-}
-
 static void update_home_datetime_locked(void)
 {
     char time_buf[8] = "--:--";
@@ -785,7 +779,15 @@ static uint32_t aqi_state_color(const char *state)
     return C_T2_U32;
 }
 
-static void set_aqi_value_locked(float aqi, const char *state)
+/* Soft tinted surface behind the AQI status pill for a given accent color. */
+static uint32_t aqi_state_surface(uint32_t color)
+{
+    if (color == C_GREEN_U32 || color == UI_D_GREEN) return UI_D_GREEN_SURF;
+    if (color == C_RED_U32   || color == UI_D_RED)   return UI_D_RED_SURF;
+    return UI_D_AMBER_SURF;
+}
+
+static void set_aqi_value_locked(float aqi, const char *state, uint16_t pm25)
 {
     if (aqi < 0.0f) aqi = 0.0f;
     if (aqi > 500.0f) aqi = 500.0f;
@@ -793,13 +795,11 @@ static void set_aqi_value_locked(float aqi, const char *state)
     char value[16];
     snprintf(value, sizeof(value), "%.0f", aqi);
     set_label_locked(objects.aqi_val, value);
-    align_dashboard_value_locked(objects.aqi_val, objects.aqi_arc);
-    if (objects.aqi_arc) lv_arc_set_value(objects.aqi_arc, (int)aqi);
+    if (objects.aqi_arc) lv_arc_set_value(objects.aqi_arc, (int)aqi);   /* arc range 0-300 clamps */
     set_label_locked(objects.aqi_state, aqi_display_state(state));
 
     uint32_t color = aqi_state_color(state);
-    bool alert = strcmp(aqi_display_state(state), "Unhealthy") == 0 ||
-                 strcmp(aqi_display_state(state), "Severe") == 0;
+    uint32_t surface = aqi_state_surface(color);
     if (objects.aqi_arc) {
         lv_obj_set_style_arc_color(objects.aqi_arc, lv_color_hex(color),
                                    LV_PART_INDICATOR | LV_STATE_DEFAULT);
@@ -812,86 +812,71 @@ static void set_aqi_value_locked(float aqi, const char *state)
         lv_obj_set_style_text_color(objects.aqi_state, lv_color_hex(color),
                                     LV_PART_MAIN | LV_STATE_DEFAULT);
     }
-    set_status_pill_style_locked(objects.aqi_mood, color,
-                                 alert ? UI_COLOR_ALERT_BG : UI_COLOR_PANEL);
-    if (objects.aqi_cont) {
-        lv_obj_set_style_bg_color(objects.aqi_cont,
-                                  lv_color_hex(alert ? UI_COLOR_ALERT_BG : UI_COLOR_CARD),
+    if (objects.aqi_mood) {
+        lv_obj_set_style_bg_color(objects.aqi_mood, lv_color_hex(surface),
                                   LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(objects.aqi_cont,
-                                      lv_color_hex(alert ? color : UI_COLOR_CARD_BORDER),
-                                      LV_PART_MAIN | LV_STATE_DEFAULT);
     }
+    if (objects.aqi_pm25) {
+        char pm[24];
+        snprintf(pm, sizeof(pm), "%u \xC2\xB5g/m\xC2\xB3", (unsigned)pm25);
+        set_label_locked(objects.aqi_pm25, pm);
+    }
+}
+
+/* Recolor a light status pill (surface fill + text + leading dot). */
+static void set_light_pill_locked(lv_obj_t *pill, lv_obj_t *label, lv_obj_t *dot,
+                                  const char *text, uint32_t color, uint32_t surface)
+{
+    if (label) {
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_color(label, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    if (dot)
+        lv_obj_set_style_bg_color(dot, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (pill)
+        lv_obj_set_style_bg_color(pill, lv_color_hex(surface), LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
 static void update_temp_pill_locked(float temp)
 {
-    if (!objects.obj7 || !objects.temp_mood || !objects.temp_arc) return;
+    if (!objects.obj7 || !objects.temp_mood) return;
     const char *text;
-    uint32_t color;
+    uint32_t color, surface;
     if (temp > TEMP_THRESH_HOT) {
-        text = "Too Hot!";
-        color = C_RED_U32;
+        text = "Hot"; color = UI_D_RED; surface = UI_D_RED_SURF;
     } else if (temp > TEMP_THRESH_WARM) {
-        text = "Warm";
-        color = C_AMBER_U32;
+        text = "Warm"; color = UI_D_AMBER_TEXT; surface = UI_D_AMBER_SURF;
     } else {
-        text = "Comfortable";
-        color = C_CYAN_U32;
+        text = "Comfortable"; color = UI_D_GREEN; surface = UI_D_GREEN_SURF;
     }
-    uint32_t chip_bg = temp > TEMP_THRESH_HOT ? UI_COLOR_ALERT_BG : UI_COLOR_PANEL;
-    lv_label_set_text(objects.obj7, text);
-    lv_obj_set_style_text_color(objects.obj7, lv_color_hex(color),
-                                LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (objects.temp_img)
-        lv_obj_set_style_bg_color(objects.temp_img, lv_color_hex(color),
+    set_light_pill_locked(objects.temp_mood, objects.obj7, objects.temp_img,
+                          text, color, surface);
+    /* Marker pill (objects.temp_arc) tracks the same accent. */
+    if (objects.temp_arc) {
+        lv_obj_set_style_bg_color(objects.temp_arc, lv_color_hex(surface),
                                   LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_color(objects.temp_arc, lv_color_hex(color),
-                               LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    set_status_pill_style_locked(objects.temp_mood, color, chip_bg);
-    if (objects.temp_cont) {
-        lv_obj_set_style_bg_color(objects.temp_cont,
-                                  lv_color_hex(temp > TEMP_THRESH_HOT ? UI_COLOR_ALERT_BG : UI_COLOR_CARD),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(objects.temp_cont,
-                                      lv_color_hex(temp > TEMP_THRESH_HOT ? UI_COLOR_ALERT_BORDER : UI_COLOR_CARD_BORDER),
-                                      LV_PART_MAIN | LV_STATE_DEFAULT);
     }
+    if (objects.obj4)
+        lv_obj_set_style_text_color(objects.obj4, lv_color_hex(color),
+                                    LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
 static void update_hum_pill_locked(float hum)
 {
-    if (!objects.obj12 || !objects.hum_mood || !objects.hum_bar) return;
+    if (!objects.obj12 || !objects.hum_mood) return;
     const char *text;
-    uint32_t color;
+    uint32_t color, surface;
     if (hum >= 80.0f) {
-        text = "Critical";
-        color = C_RED_U32;
+        text = "Critical"; color = UI_D_RED; surface = UI_D_RED_SURF;
     } else if (hum > HUM_THRESH_HIGH) {
-        text = "High";
-        color = C_AMBER_U32;
+        text = "Humid"; color = UI_D_BLUE; surface = UI_D_BLUE_SURF;
+    } else if (hum < 30.0f) {
+        text = "Dry"; color = UI_D_AMBER_TEXT; surface = UI_D_AMBER_SURF;
     } else {
-        text = "Moderate";
-        color = C_CYAN_U32;
+        text = "Comfortable"; color = UI_D_GREEN; surface = UI_D_GREEN_SURF;
     }
-    uint32_t chip_bg = hum >= 80.0f ? UI_COLOR_ALERT_BG : UI_COLOR_PANEL;
-    lv_label_set_text(objects.obj12, text);
-    lv_obj_set_style_text_color(objects.obj12, lv_color_hex(color),
-                                LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (objects.hum_img)
-        lv_obj_set_style_bg_color(objects.hum_img, lv_color_hex(color),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(objects.hum_bar, lv_color_hex(color),
-                              LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    set_status_pill_style_locked(objects.hum_mood, color, chip_bg);
-    if (objects.hum_cont) {
-        lv_obj_set_style_bg_color(objects.hum_cont,
-                                  lv_color_hex(hum >= 80.0f ? UI_COLOR_ALERT_BG : UI_COLOR_CARD),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(objects.hum_cont,
-                                      lv_color_hex(hum >= 80.0f ? UI_COLOR_ALERT_BORDER : UI_COLOR_CARD_BORDER),
-                                      LV_PART_MAIN | LV_STATE_DEFAULT);
-    }
+    set_light_pill_locked(objects.hum_mood, objects.obj12, objects.hum_img,
+                          text, color, surface);
 }
 
 static const char *fingerprint_phase_for_title(const char *title)
@@ -936,34 +921,85 @@ static const char *fingerprint_message_normalize(const char *message)
     return message;
 }
 
-static void align_dashboard_value_locked(lv_obj_t *value, lv_obj_t *arc)
+/* Position the thermometer marker pill (objects.temp_arc) from a temperature. */
+static void position_temp_marker_locked(float temp)
 {
-    if (value && arc) {
-        lv_obj_align_to(value, arc, LV_ALIGN_CENTER, 0, -3);
+    if (!objects.temp_arc) return;
+    float frac = (temp - (float)DASH_TEMP_MIN) /
+                 (float)(DASH_TEMP_MAX - DASH_TEMP_MIN);
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    int y = DASH_THERMO_YBOT - (int)(frac * (DASH_THERMO_YBOT - DASH_THERMO_YTOP));
+    lv_obj_set_y(objects.temp_arc, y);
+    if (objects.obj4) {
+        char b[12];
+        snprintf(b, sizeof(b), "%.0f\xC2\xB0", temp);
+        lv_label_set_text(objects.obj4, b);
     }
 }
 
+/* Refresh the humidity wave chart + its floating marker bubble. */
+static void update_hum_chart_locked(float hum)
+{
+    if (!objects.hum_bar) return;
+    lv_chart_series_t *ser = lv_chart_get_series_next(objects.hum_bar, NULL);
+    if (!ser) return;
+
+    float series[DASH_HUM_POINTS];
+    size_t k = metrics_history_series(METRIC_HUM, series, DASH_HUM_POINTS);
+    for (int i = 0; i < DASH_HUM_POINTS; i++) {
+        int v = (k > 0) ? (int)series[i] : (int)hum;
+        lv_chart_set_value_by_id(objects.hum_bar, ser, i, v);
+    }
+    lv_chart_refresh(objects.hum_bar);
+
+    /* Marker bubble at the right edge, height mapped from the current value. */
+    if (objects.hum_marker) {
+        const int chart_x = 24, chart_y = 252, chart_w = 282, chart_h = 96;
+        float f = hum / 100.0f;
+        if (f < 0.0f) f = 0.0f;
+        if (f > 1.0f) f = 1.0f;
+        int my = chart_y + (int)((1.0f - f) * chart_h) - 15;
+        if (my < chart_y - 6) my = chart_y - 6;
+        if (my > chart_y + chart_h - 24) my = chart_y + chart_h - 24;
+        lv_obj_set_pos(objects.hum_marker, chart_x + chart_w - 56, my);
+        lv_obj_t *lbl = lv_obj_get_child(objects.hum_marker, 0);
+        if (lbl) {
+            char b[8];
+            snprintf(b, sizeof(b), "%.0f%%", hum);
+            lv_label_set_text(lbl, b);
+        }
+        lv_obj_clear_flag(objects.hum_marker, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Update the MIN/AVG/MAX-24H stat cells for one metric. */
+static void set_stat_cells_locked(metric_kind_t kind, lv_obj_t *mn, lv_obj_t *av,
+                                  lv_obj_t *mx, const char *unit)
+{
+    float lo, avg, hi;
+    if (!metrics_history_stats(kind, &lo, &avg, &hi)) return;
+    char b[16];
+    if (mn) { snprintf(b, sizeof(b), "%.0f%s", lo,  unit); set_label_locked(mn, b); }
+    if (av) { snprintf(b, sizeof(b), "%.0f%s", avg, unit); set_label_locked(av, b); }
+    if (mx) { snprintf(b, sizeof(b), "%.0f%s", hi,  unit); set_label_locked(mx, b); }
+}
+
+/* Keep the fingerprint text centered/wrapped for the light scan layout. The
+ * label positions themselves are set at create time (create_screen_fingerprint_
+ * setting); here we only re-assert alignment/width in case a long status string
+ * was pushed while the screen was cached. */
 static void align_fingerprint_text_locked(void)
 {
-    if (objects.obj53) {
-        lv_obj_set_pos(objects.obj53, 40, 10);
-        lv_obj_set_width(objects.obj53, 144);
-        lv_obj_set_style_text_align(objects.obj53, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    }
     if (objects.obj49) {
-        lv_obj_set_pos(objects.obj49, 20, 126);
-        lv_obj_set_width(objects.obj49, 184);
-        lv_obj_set_style_text_font(objects.obj49, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_set_width(objects.obj49, 720 - 48 - 72);
         lv_obj_set_style_text_align(objects.obj49, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     }
     if (objects.fingerprint_instruction) {
-        lv_obj_set_pos(objects.fingerprint_instruction, 18, 166);
-        lv_obj_set_width(objects.fingerprint_instruction, 188);
+        lv_obj_set_width(objects.fingerprint_instruction, 720 - 48 - 72);
         lv_obj_set_style_text_align(objects.fingerprint_instruction, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     }
     if (objects.obj52) {
-        lv_obj_set_pos(objects.obj52, 74, 226);
-        lv_obj_set_width(objects.obj52, 90);
         lv_obj_set_style_text_align(objects.obj52, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     }
 }
@@ -976,17 +1012,21 @@ static void set_dashboard_values_locked(float temp, float hum)
     if (hum < 0.0f) hum = 0.0f;
     if (hum > 100.0f) hum = 100.0f;
 
-    snprintf(buf, sizeof(buf), "%.1f", temp);
+    snprintf(buf, sizeof(buf), "%.0f", temp);
     set_label_locked(objects.temp_val, buf);
-    align_dashboard_value_locked(objects.temp_val, objects.temp_arc);
-    if (objects.temp_arc) lv_arc_set_value(objects.temp_arc, (int)temp);
+    position_temp_marker_locked(temp);
 
     snprintf(buf, sizeof(buf), "%.0f", hum);
     set_label_locked(objects.hum_val, buf);
-    if (objects.hum_bar) lv_bar_set_value(objects.hum_bar, (int)hum, LV_ANIM_OFF);
+    update_hum_chart_locked(hum);
 
     update_temp_pill_locked(temp);
     update_hum_pill_locked(hum);
+
+    set_stat_cells_locked(METRIC_TEMP, objects.temp_stat_min, objects.temp_stat_avg,
+                          objects.temp_stat_max, "\xC2\xB0");
+    set_stat_cells_locked(METRIC_HUM, objects.hum_stat_min, objects.hum_stat_avg,
+                          objects.hum_stat_max, "%");
 }
 
 static void cache_apply_locked(void)
@@ -1028,7 +1068,7 @@ static void cache_apply_locked(void)
         set_dashboard_values_locked(cache.temp, cache.hum);
     }
     if (cache.has_aqi) {
-        set_aqi_value_locked(cache.aqi, cache.aqi_state);
+        set_aqi_value_locked(cache.aqi, cache.aqi_state, cache.pm25);
     }
 }
 
@@ -1141,28 +1181,28 @@ static void create_thread_sensor_row(lv_obj_t *parent, int index, const char *na
     lv_obj_set_pos(row, 24, 12 + index * 150);
     lv_obj_set_size(row, 672, 132);
     lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(row, lv_color_hex(UI_COLOR_CARD_BORDER), LV_PART_MAIN);
-    lv_obj_set_style_border_opa(row, 190, LV_PART_MAIN);
+    lv_obj_set_style_border_color(row, lv_color_hex(UI_D_CARD_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(row, 255, LV_PART_MAIN);
     lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(row, 12, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(row, lv_color_hex(UI_COLOR_CARD), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(row, 230, LV_PART_MAIN);
+    lv_obj_set_style_radius(row, 20, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(row, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(row, 235, LV_PART_MAIN);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *sensor_icon = lv_img_create(row);
     lv_obj_set_pos(sensor_icon, 24, 21);
     lv_img_set_src(sensor_icon, &img_sensor);
     lv_img_set_zoom(sensor_icon, 450);
-    lv_obj_set_style_img_recolor(sensor_icon, lv_color_hex(UI_COLOR_AMBER),
+    lv_obj_set_style_img_recolor(sensor_icon, lv_color_hex(UI_D_GREEN),
                                  LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_img_recolor_opa(sensor_icon, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(sensor_icon, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label = lv_label_create(row);
     lv_label_set_text(label, name);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_10, LV_PART_MAIN);
+    lv_obj_set_style_text_font(label, &lv_font_inter_22, LV_PART_MAIN);
     lv_obj_set_style_text_color(label,
-                                lv_color_hex(enabled ? UI_COLOR_TEXT_PRIMARY : UI_COLOR_TEXT_DIM),
+                                lv_color_hex(enabled ? UI_D_HEADING : UI_D_MUTED),
                                 LV_PART_MAIN);
     lv_obj_set_pos(label, 138, 48);
     lv_obj_set_size(label, 234, 42);
@@ -1294,10 +1334,11 @@ static void configure_screen_locked(enum ScreensEnum screen)
         cache_lock();
         bool has_aqi = s_display_cache.has_aqi;
         float aqi = s_display_cache.aqi;
+        uint16_t pm25 = s_display_cache.pm25;
         char aqi_state[sizeof(s_display_cache.aqi_state)];
         cache_copy(aqi_state, sizeof(aqi_state), s_display_cache.aqi_state);
         cache_unlock();
-        set_aqi_value_locked(has_aqi ? aqi : 0.0f, has_aqi ? aqi_state : "good");
+        set_aqi_value_locked(has_aqi ? aqi : 0.0f, has_aqi ? aqi_state : "good", has_aqi ? pm25 : 0);
         set_label_locked(objects.hub_location, hub_location_text_locked());
         set_cached_welcome_text_locked();
         break;
@@ -1604,17 +1645,18 @@ void display_user_name(const char *user_name)
     }
 }
 
-void display_update_aqi(float aqi, const char *state)
+void display_update_aqi(float aqi, const char *state, uint16_t pm25)
 {
     cache_lock();
     s_display_cache.has_aqi = true;
     s_display_cache.aqi = aqi;
+    s_display_cache.pm25 = pm25;
     cache_copy(s_display_cache.aqi_state, sizeof(s_display_cache.aqi_state), state);
     cache_unlock();
 
     if (!display_is_ready()) return;
     if (xSemaphoreTake(s_lvgl_mux, pdMS_TO_TICKS(200)) != pdTRUE) return;
-    set_aqi_value_locked(aqi, state);
+    set_aqi_value_locked(aqi, state, pm25);
     xSemaphoreGive(s_lvgl_mux);
 }
 
@@ -1729,6 +1771,8 @@ void display_update_temp_hum(float temp, float hum)
     s_display_cache.temp = temp;
     s_display_cache.hum = hum;
     cache_unlock();
+
+    metrics_history_push(temp, hum);
 
     if (!display_is_ready()) return;
     if (xSemaphoreTake(s_lvgl_mux, pdMS_TO_TICKS(200)) != pdTRUE) return;

@@ -39,7 +39,7 @@ void display_show_fingerprint_screen(const char *title, const char *prompt);
 void display_fingerprint_phase(const char *phase, const char *message);
 void display_fingerprint_progress(uint8_t percent);
 void display_update_temp_hum(float temp, float hum);
-void display_update_aqi(float aqi, const char *state);
+void display_update_aqi(float aqi, const char *state, uint16_t pm25);
 void display_refresh_sensor_nodes(void);
 /* Re-render the sensor list so a watchdog offline/online change is reflected live (badge is
  * derived from nrf_thread_is_sensor_offline at row-build time). */

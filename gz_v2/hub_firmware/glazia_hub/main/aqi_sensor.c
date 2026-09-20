@@ -164,7 +164,7 @@ static void aqi_sensor_task(void *arg)
         ESP_LOGD(TAG, "PM2.5=%u ug/m3 -> AQI=%.0f", (unsigned)pm2_5, aqi);
 
         if (aqi_sensor_should_publish()) {
-            display_update_aqi(aqi, aqi_classifier(aqi));
+            display_update_aqi(aqi, aqi_classifier(aqi), pm2_5);
         }
 
         // The sensor streams every ~2.3 s (stable) to ~0.2–0.8 s (fast); this
