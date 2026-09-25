@@ -417,6 +417,7 @@ static esp_err_t dsi_hw_init(void)
 
     /* ── DPI (80 MHz, validated porch values) + ILI9881C panel ──────────── */
     esp_lcd_dpi_panel_config_t dpi_cfg = ILI9881C_720_1280_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
+    dpi_cfg.dpi_clock_freq_mhz = 45;
     ili9881c_vendor_config_t vendor_cfg = {
         .mipi_config = {
             .dsi_bus    = dsi_bus,
@@ -459,10 +460,12 @@ static esp_err_t dsi_hw_init(void)
      * cause MSPI arbitration stalls with the DW-GDMA framebuffer stream, producing
      * display flicker and Load access faults under load.  Heap allocation (not BSS)
      * ensures SDIO mempools (allocated at do_global_ctors) are not affected. */
-    lv_color_t *buf1 = heap_caps_malloc(LCD_H_RES * 22 * sizeof(lv_color_t),
+    lv_color_t *buf1 = heap_caps_malloc(LCD_H_RES * 52 * sizeof(lv_color_t),
                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!buf1) { ESP_LOGE(TAG, "draw buffer alloc failed"); return ESP_ERR_NO_MEM; }
-    lv_disp_draw_buf_init(&s_draw_buf, buf1, NULL, LCD_H_RES * 20);
+    lv_color_t *buf2 = heap_caps_malloc(LCD_H_RES * 52 * sizeof(lv_color_t),
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!buf1 || !buf2) { ESP_LOGE(TAG, "draw buffer alloc failed"); return ESP_ERR_NO_MEM; }
+    lv_disp_draw_buf_init(&s_draw_buf, buf1, buf2, LCD_H_RES * 50);
 
     lv_disp_drv_init(&s_disp_drv);
     s_disp_drv.hor_res  = LCD_H_RES;
@@ -1679,7 +1682,7 @@ void display_update_aqi(float aqi, const char *state, uint16_t pm25)
     cache_unlock();
 
     if (!display_is_ready()) return;
-    if (xSemaphoreTake(s_lvgl_mux, pdMS_TO_TICKS(200)) != pdTRUE) return;
+    if (xSemaphoreTake(s_lvgl_mux, portMAX_DELAY) != pdTRUE) return;
     set_aqi_value_locked(aqi, state, pm25);
     xSemaphoreGive(s_lvgl_mux);
 }
@@ -1799,7 +1802,7 @@ void display_update_temp_hum(float temp, float hum)
     metrics_history_push(temp, hum);
 
     if (!display_is_ready()) return;
-    if (xSemaphoreTake(s_lvgl_mux, pdMS_TO_TICKS(200)) != pdTRUE) return;
+    if (xSemaphoreTake(s_lvgl_mux, portMAX_DELAY) != pdTRUE) return;
     set_dashboard_values_locked(temp, hum);
     xSemaphoreGive(s_lvgl_mux);
 }

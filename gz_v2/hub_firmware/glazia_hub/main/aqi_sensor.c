@@ -25,7 +25,7 @@ static const char *TAG = "AQI_SENSOR";
 
 #define AQI_TASK_STACK          3072
 #define AQI_TASK_PRIORITY       4
-#define AQI_WARMUP_MS           30000  // fan/laser needs ~30 s to stabilize
+#define AQI_WARMUP_MS           3000  // fan/laser needs ~3 s to stabilize
 #define AQI_UPDATE_DELAY_MS     1000
 #define PMS_READ_TIMEOUT_MS     2000
 
