@@ -158,7 +158,7 @@ static lv_obj_t *back_button(lv_obj_t *parent, uint32_t accent)
 
 static void add_nav_title(lv_obj_t *parent, const char *title, uint32_t accent, lv_obj_t **back_handle)
 {
-    lv_obj_t *nav = card(parent, PAGE_X, 24, PAGE_W, 126, 28);
+    lv_obj_t *nav = card(parent, PAGE_X + 10, 44, PAGE_W, 126, 28);
     *back_handle = back_button(nav, accent);
     lv_obj_set_pos(*back_handle, 12, 18);
     label(nav, title, 120, 27, 492, 72, &lv_font_grotesk_34,
@@ -302,10 +302,10 @@ static void create_home_content(lv_obj_t *root)
     objects.obj0 = lv_img_create(objects.cont_logo_card);
     lv_obj_set_pos(objects.obj0, 8, 18);
     lv_img_set_src(objects.obj0, &img_gz_logo);
-    lv_img_set_zoom(objects.obj0, 300);
+    lv_img_set_zoom(objects.obj0, 50);
     lv_obj_clear_flag(objects.obj0, LV_OBJ_FLAG_SCROLLABLE);
 
-    objects.welcome_home = label(objects.cont_logo_card, "Welcome, User", 128, 28, 300, 44,
+    objects.welcome_home = label(objects.cont_logo_card, "Welcome, User", 128, 35, 300, 44,
                                  &lv_font_grotesk_34, UI_D_HEADING,
                                  LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
@@ -313,12 +313,12 @@ static void create_home_content(lv_obj_t *root)
     lv_obj_set_pos(objects.loc_cont_1, 128, 84);
     lv_obj_set_size(objects.loc_cont_1, 300, 40);
     ui_style_transparent(objects.loc_cont_1);
-    objects.status_dot = dot(objects.loc_cont_1, 0, 12, 12, UI_D_GREEN);
-    objects.hub_status = label(objects.loc_cont_1, "Online", 22, 2, 110, 32,
+    objects.status_dot = dot(objects.loc_cont_1, 0, 18, 12, UI_D_GREEN);
+    objects.hub_status = label(objects.loc_cont_1, "Online", 22, 8, 110, 32,
                                &lv_font_inter_22, UI_D_GREEN,
                                LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.hub_location_dot = dot(objects.loc_cont_1, 128, 14, 8, UI_D_MUTED);
-    objects.hub_location = label(objects.loc_cont_1, "Home", 148, 2, 150, 32,
+    objects.hub_location_dot = dot(objects.loc_cont_1, 128, 22, 8, UI_D_MUTED);
+    objects.hub_location = label(objects.loc_cont_1, "Home", 148, 8, 150, 32,
                                  &lv_font_inter_22, UI_D_MUTED,
                                  LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
 
@@ -328,7 +328,7 @@ static void create_home_content(lv_obj_t *root)
     lv_obj_set_size(wifi_pill, 118, 56);
     ui_style_status_pill_light(wifi_pill, UI_D_GREEN, UI_D_GREEN_SURF);
     dot(wifi_pill, 18, 22, 12, UI_D_GREEN);
-    lv_obj_t *wifi_lbl = label(wifi_pill, "Wi-Fi", 0, 0, 80, 56, &lv_font_inter_22,
+    lv_obj_t *wifi_lbl = label(wifi_pill, "Wi-Fi", 0, 6, 80, 56, &lv_font_inter_22,
                                UI_D_GREEN, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     lv_obj_align(wifi_lbl, LV_ALIGN_LEFT_MID, 38, 0);
 
@@ -351,7 +351,7 @@ static void create_home_content(lv_obj_t *root)
     /* ── Page title over the photo ───────────────────────────────────────── */
     label(root, "Your home at a glance", PAGE_X, 292, PAGE_W, 44, &lv_font_grotesk_34,
           UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    label(root, "Temperature, humidity and air quality \xE2\x80\x94 updated in real time.",
+    label(root, "Temperature, humidity and air quality updated in real time.",
           PAGE_X, 338, PAGE_W, 28, &lv_font_inter_22, UI_D_SUBTLE,
           LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
 
@@ -363,14 +363,9 @@ static void create_home_content(lv_obj_t *root)
           UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     label(objects.aqi_cont, "Living Room", 92, 54, 240, 24, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.aqi_mood = status_pill(objects.aqi_cont, 24, 96, 168, 46, "Moderate",
+    objects.aqi_mood = status_pill(objects.aqi_cont, 24, 102, 168, 46, "Moderate",
                                    UI_D_AMBER_TEXT, UI_D_AMBER_SURF,
                                    &objects.aqi_dot, &objects.aqi_state);
-
-    label(objects.aqi_cont, "Air quality is moderate.", 24, 168, 340, 26, &lv_font_inter_22,
-          UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
-    label(objects.aqi_cont, "Consider ventilation for a fresher home.", 24, 196, 360, 26,
-          &lv_font_plexmono_18, UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
 
     lv_obj_t *pm_tile = lv_obj_create(objects.aqi_cont);
     lv_obj_set_pos(pm_tile, 24, 236);
@@ -378,7 +373,7 @@ static void create_home_content(lv_obj_t *root)
     ui_style_stat_cell(pm_tile);
     label(pm_tile, "PM2.5", 16, 10, 120, 22, &lv_font_plexmono_18, UI_D_MICRO,
           LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.aqi_pm25 = label(pm_tile, "-- \xC2\xB5g/m\xC2\xB3", 16, 30, 180, 26,
+    objects.aqi_pm25 = label(pm_tile, "-- µg/m³", 16, 30, 180, 26,
                              &lv_font_inter_22, UI_D_VALUE, LV_TEXT_ALIGN_LEFT,
                              LV_LABEL_LONG_CLIP);
 
@@ -415,12 +410,12 @@ static void create_home_content(lv_obj_t *root)
     label(objects.temp_cont, "Living Room", 82, 50, 180, 22, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
-    objects.temp_mood = status_pill(objects.temp_cont, 22, 88, 150, 42, "Comfortable",
+    objects.temp_mood = status_pill(objects.temp_cont, 22, 94, 150, 42, "Comfortable",
                                     UI_D_GREEN, UI_D_GREEN_SURF, &objects.temp_img, &objects.obj7);
 
     objects.temp_val = label(objects.temp_cont, "0", 22, 138, 180, 68, &lv_font_grotesk_64,
                              UI_D_VALUE, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.obj6 = label(objects.temp_cont, "\xC2\xB0""C", 150, 156, 60, 40, &lv_font_grotesk_34,
+    objects.obj6 = label(objects.temp_cont, "°""C", 150, 156, 60, 40, &lv_font_grotesk_34,
                          UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     label(objects.temp_cont, "Current temperature", 24, 216, 240, 22, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
@@ -441,7 +436,7 @@ static void create_home_content(lv_obj_t *root)
     label(objects.hum_cont, "Living Room", 82, 50, 180, 22, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
-    objects.hum_mood = status_pill(objects.hum_cont, 22, 88, 160, 42, "Comfortable",
+    objects.hum_mood = status_pill(objects.hum_cont, 22, 94, 160, 42, "Comfortable",
                                    UI_D_GREEN, UI_D_GREEN_SURF, &objects.hum_img, &objects.obj12);
 
     objects.hum_val = label(objects.hum_cont, "0", 22, 138, 140, 68, &lv_font_grotesk_64,
@@ -600,7 +595,7 @@ void create_screen_hub_register_welcome(void)
     base_screen(obj);
     reg_background(obj);
 
-    objects.reg_welcome_logo = reg_logo(obj, PAGE_X, 44, 360);
+    objects.reg_welcome_logo = reg_logo(obj, PAGE_X+80, 100, 400);
 
     mono_label(obj, "SMARTER LIVING", 28, 306, 400, UI_LIGHT_MONO, LV_TEXT_ALIGN_LEFT);
 
@@ -622,13 +617,13 @@ void create_screen_hub_register_welcome(void)
     ui_style_dark_pill(objects.reg_welcome_btn);
     lv_obj_set_style_pad_all(objects.reg_welcome_btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_t *btn_label = label(objects.reg_welcome_btn, "Get Started", 0, -12, 372, 100,
+    lv_obj_t *btn_label = label(objects.reg_welcome_btn, "Get Started", 0, 12, 372, 100,
                                 &lv_font_inter_30, UI_DARK_PILL_TEXT,
                                 LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
 
-    lv_obj_align(btn_label, LV_ALIGN_CENTER, -24, 0);
+    lv_obj_align(btn_label, LV_ALIGN_CENTER, -24, 26);
 
-    lv_obj_t *btn_icon = icon(objects.reg_welcome_btn, &img_fwd, 0, 0, 130,
+    lv_obj_t *btn_icon = icon(objects.reg_welcome_btn, &img_fwd, 0, 0, 200,
                               UI_DARK_PILL_TEXT, true);
     lv_obj_align(btn_icon, LV_ALIGN_RIGHT_MID, -40, 0);
 
@@ -674,10 +669,10 @@ void create_screen_hub_register_qr(void)
     lv_obj_set_style_radius(setup_pill, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(setup_pill, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(setup_pill, LV_OBJ_FLAG_SCROLLABLE);
-    objects.reg_qr_status = label(setup_pill, "Setup", 0, 0, 130, 48,
+    objects.reg_qr_status = label(setup_pill, "Setup", 0, 5, 130, 48,
                                   &lv_font_inter_22, UI_SETUP_PILL_TEXT,
                                   LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
-    lv_obj_align(objects.reg_qr_status, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(objects.reg_qr_status, LV_ALIGN_CENTER, 0, 7);
 
     label(qr_card, "Scan to Register the Hub", 0, 96, 600, 48,
           &lv_font_grotesk_34, UI_LIGHT_TEXT, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
@@ -704,7 +699,7 @@ void create_screen_hub_register_qr(void)
 
     mono_label(qr_card, "QR CODE", 0, 586, 600, UI_LIGHT_MONO, LV_TEXT_ALIGN_CENTER);
     char mac_line[40];
-    snprintf(mac_line, sizeof(mac_line), "MAC: %s", g_hub_mac);
+    snprintf(mac_line, sizeof(mac_line),"MAC: %s", g_hub_mac);
     label(qr_card, mac_line, 0, 616, 600, 30,
           &lv_font_plexmono_18, UI_LIGHT_TEXT, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
 
@@ -715,10 +710,10 @@ void create_screen_hub_register_qr(void)
     lv_obj_set_size(status_pill, 480, 72);
     ui_style_dark_pill(status_pill);
     lv_obj_clear_flag(status_pill, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *status_lbl = label(status_pill, "Waiting for the app...", 0, 0, 480, 72,
+    lv_obj_t *status_lbl = label(status_pill, "Waiting for the app...", 0, 10, 480, 72,
                                  &lv_font_inter_22, UI_DARK_PILL_TEXT,
                                  LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
-    lv_obj_align(status_lbl, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(status_lbl, LV_ALIGN_CENTER, 0, 20);
 
     tick_screen_hub_register_qr();
 }
@@ -748,7 +743,7 @@ static void create_option_row(lv_obj_t *parent, lv_obj_t **handle, lv_obj_t **ti
     lv_obj_set_size(row, PAGE_W, 156);
     ui_style_card_light(row, 24);
     lv_obj_t *icon_box = panel(row, 24, 21, 114, 114, 28);
-    icon(icon_box, img, -30, -30, 342, accent, true);
+    icon(icon_box, img, 0, 0, 342, accent, true);
     *title_handle = label(row, title, 162, 34, 450, 40, &lv_font_inter_22,
                           UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
     *sub_handle = label(row, sub, 162, 84, 450, 34, &lv_font_plexmono_18,
@@ -792,9 +787,9 @@ void create_screen_sensor_nodes_setting()
     add_nav_title(obj, "Sensor Nodes", UI_D_HEADING, &objects.obj44);
     objects.obj42 = label(obj, "", 0, 0, 3, 3, &lv_font_plexmono_18,
                           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.obj43 = label(obj, "Enable or disable sensor nodes as needed.", PAGE_X + 6, 156,
-                          660, 48, &lv_font_plexmono_18, UI_D_MUTED,
-                          LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
+    // objects.obj43 = label(obj, "Enable or disable sensor nodes as needed.", PAGE_X + 6, 156,
+    //                       660, 48, &lv_font_plexmono_18, UI_D_MUTED,
+    //                       LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
     objects.settings_menu_cont_1 = lv_obj_create(obj);
     lv_obj_set_pos(objects.settings_menu_cont_1, 0, 210);
     lv_obj_set_size(objects.settings_menu_cont_1, SCREEN_W, 900);
@@ -805,8 +800,8 @@ void create_screen_sensor_nodes_setting()
     lv_obj_set_pos(objects.add_sensor_button, PAGE_X, 1140);
     lv_obj_set_size(objects.add_sensor_button, PAGE_W, 96);
     ui_style_card_light(objects.add_sensor_button, 20);
-    objects.obj45 = label(objects.add_sensor_button, "+ Add Another Sensor", 0, 0, PAGE_W - 60, 96,
-                          &lv_font_inter_22, UI_D_GREEN,
+    objects.obj45 = label(objects.add_sensor_button, "+ Add Another Sensor", 0, 10, PAGE_W - 60, 96,
+                          &lv_font_inter_30, UI_D_GREEN,
                           LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_DOT);
     lv_obj_align(objects.obj45, LV_ALIGN_CENTER, -30, 0);
     objects.obj46 = icon(objects.add_sensor_button, &img_fwd, 0, 0, 174,
@@ -827,8 +822,8 @@ void create_screen_about_glazia()
 
     lv_obj_t *logo = lv_img_create(obj);
     lv_img_set_src(logo, &img_gz_logo);
-    lv_img_set_zoom(logo, 600);
-    lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 135);
+    lv_img_set_zoom(logo, 400);
+    lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 235);
     lv_obj_clear_flag(logo, LV_OBJ_FLAG_SCROLLABLE);
     // label(obj, "About Glazia", 0, 108, SCREEN_W, 18, &lv_font_montserrat_14,
     //       UI_COLOR_TEXT_PRIMARY, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
@@ -840,7 +835,7 @@ void create_screen_about_glazia()
         "Our mission is to connect spaces, simplify control, and empower users through intelligent technology - making everyday environments smarter and more responsive.",
         24, 24, 624, 360, &lv_font_inter_22, UI_D_HEADING,
         LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_WRAP);
-    label(body, "\xC2\xA9 Glazia Technologies - All rights reserved.", 24, 435, 624, 48,
+    label(body, "Ⓡ Glazia Technologies - All rights reserved.", 24, 435, 624, 48,
           &lv_font_plexmono_18, UI_D_MUTED, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_DOT);
     tick_screen_about_glazia();
 }

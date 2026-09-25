@@ -344,7 +344,9 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
 {
     s_lvgl_flushing = true;
     esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
-    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+    if (xSemaphoreTake(s_flush_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
+        ESP_LOGE(TAG, "lvgl_flush_cb: vsync timeout — ISR missed");
+    }
     lv_disp_flush_ready(drv);
 }
 
@@ -432,15 +434,17 @@ static esp_err_t dsi_hw_init(void)
     s_lvgl_mux       = xSemaphoreCreateMutex();
     s_flush_done_sem = xSemaphoreCreateBinary();
 
-    /* 20-row draw buffer (28,800 B) in internal HP SRAM.
-     * The DPI panel framebuffer scan at 720x1280@60 Hz saturates most of the 120 MHz
-     * PSRAM AXI bus; internal SRAM keeps the draw buffer DMA off that bus so it does
-     * not compete with SDIO streaming DMA or the panel scan. */
-    size_t buf_pixels = LCD_H_RES * 20;
-    lv_color_t *buf1 = heap_caps_malloc(buf_pixels * sizeof(lv_color_t),
+    /* 22-row draw buffer in internal SRAM; LVGL is told only 20 rows.  The extra
+     * 2 rows (2880 bytes) are a guard zone that absorbs any small lv_memcpy overrun
+     * from LVGL's blending pipeline without touching adjacent heap objects.
+     * Internal SRAM keeps the draw buffer off the MSPI bus — PSRAM draw buffers
+     * cause MSPI arbitration stalls with the DW-GDMA framebuffer stream, producing
+     * display flicker and Load access faults under load.  Heap allocation (not BSS)
+     * ensures SDIO mempools (allocated at do_global_ctors) are not affected. */
+    lv_color_t *buf1 = heap_caps_malloc(LCD_H_RES * 22 * sizeof(lv_color_t),
                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if (!buf1) { ESP_LOGE(TAG, "draw buffer alloc failed"); return ESP_ERR_NO_MEM; }
-    lv_disp_draw_buf_init(&s_draw_buf, buf1, NULL, buf_pixels);
+    lv_disp_draw_buf_init(&s_draw_buf, buf1, NULL, LCD_H_RES * 20);
 
     lv_disp_drv_init(&s_disp_drv);
     s_disp_drv.hor_res  = LCD_H_RES;
@@ -709,7 +713,9 @@ static int active_sensor_count(void)
 
 static void set_hub_connection_status_locked(bool online)
 {
-    load_screen_locked(SCREEN_ID_HUB_ONLINE);
+    if (s_current_screen != SCREEN_ID_HUB_ONLINE) {
+        load_screen_locked(SCREEN_ID_HUB_ONLINE);
+    }
     update_home_datetime_locked();
     set_cached_welcome_text_locked();
     set_switch_checked_locked(objects.obj1, online);
@@ -1424,7 +1430,7 @@ static void display_init_task(void *arg)
     s_display_state = DISPLAY_READY;
 
     /* Start LVGL task AFTER UI is fully built — eliminates init/render race. */
-    if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 16384, NULL, 5, NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 32768, NULL, 5, NULL, 1) != pdPASS) {
         ESP_LOGE(TAG, "lvgl task create failed");
         s_display_state = DISPLAY_FAILED;
         vTaskDelete(NULL);

@@ -400,7 +400,7 @@ esp_err_t hub_control_ws_start(void)
         .headers           = headers,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .task_name         = "hub_ws",
-        .task_stack = 4096,
+        .task_stack = 12288,
         .buffer_size = 5120,  /* SDP strings are usually 2-4 KB; keep WSS memory below event TLS pressure. */
         .network_timeout_ms = 20000,
         .reconnect_timeout_ms = 5000,
