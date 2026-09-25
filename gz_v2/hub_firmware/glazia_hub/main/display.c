@@ -176,6 +176,7 @@ static i2c_master_dev_handle_t s_backlight_dev = NULL;
 /* ── LVGL rendering pipeline (owned here — no esp_lvgl_port) ────────────── */
 static SemaphoreHandle_t      s_lvgl_mux       = NULL;
 static SemaphoreHandle_t      s_flush_done_sem  = NULL;
+static SemaphoreHandle_t      s_vsync_sem       = NULL;
 static volatile bool          s_lvgl_flushing   = false;
 static lv_disp_draw_buf_t     s_draw_buf;
 static lv_disp_drv_t          s_disp_drv;
@@ -340,12 +341,27 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_handle_t panel,
     return false;
 }
 
+static bool IRAM_ATTR on_dpi_vsync(esp_lcd_panel_handle_t panel,
+        esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
+{
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_vsync_sem, &woken);
+    return woken == pdTRUE;
+}
+
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {
     s_lvgl_flushing = true;
+
+    /* Drain any old vsync signals */
+    xSemaphoreTake(s_vsync_sem, 0);
+    /* Block until the exact moment VBLANK starts */
+    xSemaphoreTake(s_vsync_sem, portMAX_DELAY);
+
     esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
+
     if (xSemaphoreTake(s_flush_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
-        ESP_LOGE(TAG, "lvgl_flush_cb: vsync timeout — ISR missed");
+        ESP_LOGE(TAG, "lvgl_flush_cb: flush timeout — ISR missed");
     }
     lv_disp_flush_ready(drv);
 }
@@ -423,6 +439,7 @@ static esp_err_t dsi_hw_init(void)
     /* Register ISR-safe transfer-done callback (gives flush_done_sem from ISR) */
     esp_lcd_dpi_panel_event_callbacks_t panel_cbs = {
         .on_color_trans_done = on_color_trans_done,
+        .on_refresh_done = on_dpi_vsync,
     };
     esp_lcd_dpi_panel_register_event_callbacks(panel, &panel_cbs, NULL);
 
@@ -433,6 +450,7 @@ static esp_err_t dsi_hw_init(void)
     lv_init();
     s_lvgl_mux       = xSemaphoreCreateMutex();
     s_flush_done_sem = xSemaphoreCreateBinary();
+    s_vsync_sem      = xSemaphoreCreateBinary();
 
     /* 22-row draw buffer in internal SRAM; LVGL is told only 20 rows.  The extra
      * 2 rows (2880 bytes) are a guard zone that absorbs any small lv_memcpy overrun
@@ -986,9 +1004,9 @@ static void set_stat_cells_locked(metric_kind_t kind, lv_obj_t *mn, lv_obj_t *av
     float lo, avg, hi;
     if (!metrics_history_stats(kind, &lo, &avg, &hi)) return;
     char b[16];
-    if (mn) { snprintf(b, sizeof(b), "%.0f%s", lo,  unit); set_label_locked(mn, b); }
-    if (av) { snprintf(b, sizeof(b), "%.0f%s", avg, unit); set_label_locked(av, b); }
-    if (mx) { snprintf(b, sizeof(b), "%.0f%s", hi,  unit); set_label_locked(mx, b); }
+    if (mn) { snprintf(b, sizeof(b), "%.0f", lo); set_label_locked(mn, b); }
+    if (av) { snprintf(b, sizeof(b), "%.0f", avg); set_label_locked(av, b); }
+    if (mx) { snprintf(b, sizeof(b), "%.0f", hi); set_label_locked(mx, b); }
 }
 
 /* Keep the fingerprint text centered/wrapped for the light scan layout. The
@@ -1030,7 +1048,7 @@ static void set_dashboard_values_locked(float temp, float hum)
     update_hum_pill_locked(hum);
 
     set_stat_cells_locked(METRIC_TEMP, objects.temp_stat_min, objects.temp_stat_avg,
-                          objects.temp_stat_max, "\xC2\xB0");
+                          objects.temp_stat_max, "°C");
     set_stat_cells_locked(METRIC_HUM, objects.hum_stat_min, objects.hum_stat_avg,
                           objects.hum_stat_max, "%");
 }

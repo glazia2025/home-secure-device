@@ -88,7 +88,8 @@ static void parser_feed(uint8_t b)
         if (b == s_p.crc_acc) {
             /* Hand off to the worker task — never run on_ipc_event on nrf_rx's stack */
             struct ipc_frame f = { .type = s_p.type, .len = s_p.len };
-            if (s_p.len <= sizeof(f.buf)) memcpy(f.buf, s_p.buf, s_p.len);
+            if (f.len > sizeof(f.buf)) f.len = sizeof(f.buf);
+            memcpy(f.buf, s_p.buf, f.len);
             if (s_evt_q) xQueueSend(s_evt_q, &f, 0);
         } else {
             ESP_LOGW(TAG, "CRC mismatch: got 0x%02x expected 0x%02x", b, s_p.crc_acc);

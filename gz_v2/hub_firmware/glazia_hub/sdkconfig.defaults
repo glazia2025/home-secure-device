@@ -64,7 +64,11 @@ CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
 CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
 
 # ── Native MIPI-DSI LCD (ILI9881C 720x1280) + LVGL (display.c / ui/) ───────
-# The DSI DMA path benefits from an IRAM-safe ISR.
+# DSI DMA ISR is intentionally NOT IRAM-safe: on the P4, IRAM and DRAM share one HP-RAM
+# pool, and pulling the LCD DSI driver into IRAM costs ~15.5 KB of the internal-RAM heap —
+# exactly the boot-time headroom the ESP-Hosted SDIO DMA mempool (buf_mp_g, sdio_drv.c)
+# needs, so enabling it makes sdio_mempool_create fail with "no mem" before app_main.
+# The display fix is carried by direct_mode (dirty-lines cache-sync), not by this flag.
 # CONFIG_LCD_DSI_ISR_IRAM_SAFE is not set
 # LVGL: RGB565. Unlike the S3 (SPI ILI9341, which needed LV_COLOR_16_SWAP=y),
 # the DSI DPI panel takes native RGB565 — leave the byte-swap OFF.
@@ -73,6 +77,12 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # QR code widget: the register screen renders the hub-MAC QR (ui/screens.c).
 CONFIG_LV_USE_QRCODE=y
 # LVGL draw buffers live in PSRAM (720x1280 is far too big for internal RAM).
+# LVGL's own allocator pool (mask/line render buffers) stays in fast internal DRAM, sized
+# 32 KB (LVGL's default; down from 64). The freed ~32 KB of internal RAM offsets the IRAM
+# that coredump's panic-handler code (IRAM_ATTR, must run cache-disabled) takes on the P4's
+# unified HP-RAM pool, so the first heap block stays ~115 KB and the ESP-Hosted SDIO DMA
+# mempool (buf_mp_g, sdio_drv.c) keeps its boot headroom. 32 KB is ample for the 720x1280
+# dashboard; bump back to 48/64 once coredump is removed after root-causing the crash.
 CONFIG_LV_MEM_SIZE_KILOBYTES=64
 # Montserrat font range for the re-scaled 720x1280 UI (small legacy sizes kept
 # so the ui/fonts.h aliases resolve to real glyphs instead of degrading).
@@ -106,6 +116,14 @@ CONFIG_SPIRAM_SPEED_200M=y
 # for WiFi+BLE is sensitive to coarse tick timing.
 CONFIG_FREERTOS_HZ=1000
 
+# ── ISR stack hardening (round 7): prevent ISR-stack overflow into scheduler ──
+# The P4 supports hardware-nested interrupts (SOC_INT_HW_NESTED_SUPPORTED=y).
+# LVGL DPI flush, SDIO DMA, and WiFi transport ISRs can nest; the default
+# 2096 B/core ISR stack overflows downward into pxReadyTasksLists, corrupting
+# the scheduler ready-lists and causing the Core0 spinlock / Core1 0xffdeffde
+# crash.  4096 B gives safe headroom for 2–3 levels of nesting.
+CONFIG_FREERTOS_ISR_STACKSIZE=4096
+
 # ── ESP-Hosted C6 over SDIO (DFR1172 FireBeetle 2 ESP32-P4 onboard C6) ─────
 # CRITICAL: the onboard ESP32-C6 is wired to the P4 via SDIO, NOT SPI:
 #   CLK=18 CMD=19 D0-D3=14/15/16/17 EN(reset)=54  (per DFRobot DFR1172 wiki).
@@ -118,6 +136,40 @@ CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y
 CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
 
 # SDIO RX mode: streaming=y matches p4_wifi ground truth.
-# PSRAM bus pressure from panel+SDIO is managed by keeping the LVGL draw buffer in
-# internal SRAM (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA), off the PSRAM AXI bus.
 CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
+
+# Allocate the ESP-Hosted SDIO transport DMA mempool (buf_mp_g, sdio_drv.c) from PSRAM
+# first, falling back to internal DMA RAM only if PSRAM is full. On the P4 the GDMA reaches
+# PSRAM through cache, so this is the vendor-recommended setting for memory-intensive P4
+# workloads (the Kconfig help cites sustained 1080p streaming — exactly this hub's WebRTC
+# path). It moves ~tens of KB of transport buffers out of the scarce internal low-RAM,
+# which is what makes room for the coredump panic-handler IRAM without the boot-time
+# `sdio_mempool_create ... no mem` OOM. Small transport-latency cost, acceptable here.
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
+
+# Display renders in LVGL direct mode into the DPI panel's two PSRAM framebuffers
+# (num_fbs=2, see display.c) — double-buffered, so there is no internal-SRAM draw
+# buffer that could overrun into the FreeRTOS lists.
+# Catch any future stack overflow immediately (names the offending task) instead of
+# letting it silently corrupt memory and crash the scheduler later.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+
+# ── Coredump-to-flash: survives reboot, decoded by esp-coredump ───────────
+# UART coredump gets garbled on the P4 when a core is wedged (cross-core cache
+# stall → INT_WDT reboots before the dump finishes). Flash coredump writes to
+# the coredump partition (partitions.csv: 1 MB at 0xF00000), survives reboot,
+# and is decoded by `espcoredump.py info_corefile -t b64 -c sha256 build/glazia_hub.elf`.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+
+# ── DIAGNOSTIC BUILD (round 6): catch the internal-RAM corruptor in the act ────────────────
+# The ~22 s crash is real memory corruption (Core1 in LVGL software render, Core0's scheduler
+# ready-list smashed), independent of display flush mode and memory layout, and the load-fault
+# panic hangs before it can print (Core1 wedged mid-render → the interrupt-WDT reboots first).
+# So instead of chasing a dump out of a wedged-core panic, catch the overrun at its source:
+# COMPREHENSIVE heap poisoning checks every block's head/tail canary on every malloc/free, so
+# the first heap-block overrun aborts with `CORRUPT HEAP: ... allocated by task ...` in NORMAL
+# context (both cores healthy) where the message prints cleanly — naming the culprit task.
+# Revert to LIGHT once the bug is root-caused (comprehensive poisoning slows the heap).
+# Give any panic/abort ~5 s to finish printing the backtrace + coredump before the interrupt
+# watchdog reboots (was 800 ms — too short once a core is wedged). Revert to 800 after.
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=5000

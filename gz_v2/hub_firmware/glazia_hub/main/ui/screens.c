@@ -152,16 +152,16 @@ static lv_obj_t *back_button(lv_obj_t *parent, uint32_t accent)
     lv_obj_set_size(btn, 90, 90);
     ui_style_stat_cell(btn);
     lv_obj_set_style_radius(btn, 20, LV_PART_MAIN | LV_STATE_DEFAULT);
-    icon(btn, &img_back, -6, -6, 426, accent, true);
+    icon(btn, &img_back, 30, 30, 426, accent, true);
     return btn;
 }
 
 static void add_nav_title(lv_obj_t *parent, const char *title, uint32_t accent, lv_obj_t **back_handle)
 {
-    lv_obj_t *nav = card(parent, PAGE_X + 10, 44, PAGE_W, 126, 28);
+    lv_obj_t *nav = card(parent, PAGE_X, 20, PAGE_W, 126, 28);
     *back_handle = back_button(nav, accent);
-    lv_obj_set_pos(*back_handle, 12, 18);
-    label(nav, title, 120, 27, 492, 72, &lv_font_grotesk_34,
+    lv_obj_set_pos(*back_handle, 15, 15);
+    label(nav, title, 120, 44, 492, 72, &lv_font_grotesk_34,
           UI_D_HEADING, LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_DOT);
 }
 
@@ -216,23 +216,29 @@ static lv_obj_t *status_pill(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_co
     if (dot_h) *dot_h = d;
     lv_obj_t *l = label(p, text, 0, 0, w - 40, h, &lv_font_inter_22, color,
                         LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    lv_obj_align(l, LV_ALIGN_LEFT_MID, 36, 0);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 40, 7);
     if (label_h) *label_h = l;
     return p;
 }
 
 /* MIN/AVG/MAX-24H stat tile. */
 static lv_obj_t *stat_cell(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t w,
-                           const char *cap, lv_obj_t **val_h)
+                           const char *cap, const char *unit, lv_obj_t **val_h)
 {
     lv_obj_t *cell = lv_obj_create(parent);
     lv_obj_set_pos(cell, x, y);
     lv_obj_set_size(cell, w, 76);
     ui_style_stat_cell(cell);
+
     label(cell, cap, 0, 12, w, 20, &lv_font_plexmono_18, UI_D_MICRO,
           LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
-    *val_h = label(cell, "--", 0, 36, w, 34, &lv_font_grotesk_34, UI_D_VALUE,
-                   LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
+
+    *val_h = label(cell, "--", 0, 34, w - 24, 34, &lv_font_grotesk_34, UI_D_VALUE,
+                   LV_TEXT_ALIGN_RIGHT, LV_LABEL_LONG_CLIP);
+
+    label(cell, unit, w - 22, 44, 22, 20, &lv_font_plexmono_14, UI_D_MUTED,
+          LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
+
     return cell;
 }
 
@@ -300,12 +306,12 @@ static void create_home_content(lv_obj_t *root)
     /* ── Header card ─────────────────────────────────────────────────────── */
     objects.cont_logo_card = lcard(root, PAGE_X, 24, PAGE_W, 150, 28);
     objects.obj0 = lv_img_create(objects.cont_logo_card);
-    lv_obj_set_pos(objects.obj0, 8, 18);
+    lv_obj_set_pos(objects.obj0, -80, 20);
     lv_img_set_src(objects.obj0, &img_gz_logo);
-    lv_img_set_zoom(objects.obj0, 50);
+    lv_img_set_zoom(objects.obj0, 100);
     lv_obj_clear_flag(objects.obj0, LV_OBJ_FLAG_SCROLLABLE);
 
-    objects.welcome_home = label(objects.cont_logo_card, "Welcome, User", 128, 35, 300, 44,
+    objects.welcome_home = label(objects.cont_logo_card, "Welcome, User", 128, 55, 300, 44,
                                  &lv_font_grotesk_34, UI_D_HEADING,
                                  LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
@@ -328,9 +334,9 @@ static void create_home_content(lv_obj_t *root)
     lv_obj_set_size(wifi_pill, 118, 56);
     ui_style_status_pill_light(wifi_pill, UI_D_GREEN, UI_D_GREEN_SURF);
     dot(wifi_pill, 18, 22, 12, UI_D_GREEN);
-    lv_obj_t *wifi_lbl = label(wifi_pill, "Wi-Fi", 0, 6, 80, 56, &lv_font_inter_22,
+    lv_obj_t *wifi_lbl = label(wifi_pill, "Wi-Fi", 0, 20, 80, 56, &lv_font_inter_22,
                                UI_D_GREEN, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    lv_obj_align(wifi_lbl, LV_ALIGN_LEFT_MID, 38, 0);
+    lv_obj_align(wifi_lbl, LV_ALIGN_LEFT_MID, 40, 15);
 
     objects.button = header_ctrl(objects.cont_logo_card, &img_settings, 494, 46, UI_D_HEADING);
     objects.settings_icon = lv_obj_get_child(objects.button, 0);
@@ -359,11 +365,11 @@ static void create_home_content(lv_obj_t *root)
     objects.aqi_cont = lcard(root, PAGE_X, 384, PAGE_W, 320, 28);
     icon_badge(objects.aqi_cont, &img_cloud, 24, 24, 52, UI_D_GREEN, UI_D_AQI_SURF);
     objects.aqi_icon = lv_obj_get_child(objects.aqi_cont, lv_obj_get_child_cnt(objects.aqi_cont) - 1);
-    label(objects.aqi_cont, "AIR QUALITY", 92, 26, 240, 28, &lv_font_inter_22,
+    label(objects.aqi_cont, "Air Quality", 92, 26, 240, 28, &lv_font_inter_22,
           UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     label(objects.aqi_cont, "Living Room", 92, 54, 240, 24, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.aqi_mood = status_pill(objects.aqi_cont, 24, 102, 168, 46, "Moderate",
+    objects.aqi_mood = status_pill(objects.aqi_cont, 24, 90, 168, 46, "Moderate",
                                    UI_D_AMBER_TEXT, UI_D_AMBER_SURF,
                                    &objects.aqi_dot, &objects.aqi_state);
 
@@ -373,7 +379,7 @@ static void create_home_content(lv_obj_t *root)
     ui_style_stat_cell(pm_tile);
     label(pm_tile, "PM2.5", 16, 10, 120, 22, &lv_font_plexmono_18, UI_D_MICRO,
           LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.aqi_pm25 = label(pm_tile, "-- µg/m³", 16, 30, 180, 26,
+    objects.aqi_pm25 = label(pm_tile, "-- µg/m^3", 16, 30, 180, 26,
                              &lv_font_inter_22, UI_D_VALUE, LV_TEXT_ALIGN_LEFT,
                              LV_LABEL_LONG_CLIP);
 
@@ -405,17 +411,17 @@ static void create_home_content(lv_obj_t *root)
     objects.temp_cont = lcard(root, PAGE_X, 716, 330, 484, 28);
     icon_badge(objects.temp_cont, &img_temp_img, 22, 22, 48, UI_D_RED, UI_D_RED_SURF);
     objects.temp_label = objects.temp_cont;
-    objects.obj3 = label(objects.temp_cont, "TEMPERATURE", 82, 22, 180, 26, &lv_font_inter_22,
+    objects.obj3 = label(objects.temp_cont, "Temperature", 82, 22, 180, 26, &lv_font_inter_22,
                          UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     label(objects.temp_cont, "Living Room", 82, 50, 180, 22, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
-    objects.temp_mood = status_pill(objects.temp_cont, 22, 94, 150, 42, "Comfortable",
+    objects.temp_mood = status_pill(objects.temp_cont, 22, 80, 150, 42, "Comfortable",
                                     UI_D_GREEN, UI_D_GREEN_SURF, &objects.temp_img, &objects.obj7);
 
     objects.temp_val = label(objects.temp_cont, "0", 22, 138, 180, 68, &lv_font_grotesk_64,
                              UI_D_VALUE, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    objects.obj6 = label(objects.temp_cont, "°""C", 150, 156, 60, 40, &lv_font_grotesk_34,
+    objects.obj6 = label(objects.temp_cont, "°""C", 110, 156, 60, 40, &lv_font_grotesk_34,
                          UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     label(objects.temp_cont, "Current temperature", 24, 216, 240, 22, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
@@ -423,20 +429,20 @@ static void create_home_content(lv_obj_t *root)
 
     build_thermometer(objects.temp_cont);
 
-    stat_cell(objects.temp_cont, 24, 396, 88, "MIN 24H", &objects.temp_stat_min);
-    stat_cell(objects.temp_cont, 120, 396, 88, "AVG 24H", &objects.temp_stat_avg);
-    stat_cell(objects.temp_cont, 216, 396, 88, "MAX 24H", &objects.temp_stat_max);
+    stat_cell(objects.temp_cont, 24, 396, 88, "MIN 24H", "°C", &objects.temp_stat_min);
+    stat_cell(objects.temp_cont, 120, 396, 88, "AVG 24H", "°C", &objects.temp_stat_avg);
+    stat_cell(objects.temp_cont, 216, 396, 88, "MAX 24H", "°C", &objects.temp_stat_max);
 
     /* ── HUMIDITY card (bottom-right) ────────────────────────────────────── */
     objects.hum_cont = lcard(root, 366, 716, 330, 484, 28);
     icon_badge(objects.hum_cont, &img_hum_img, 22, 22, 48, UI_D_BLUE, UI_D_BLUE_SURF);
     objects.hum_label = objects.hum_cont;
-    objects.obj8 = label(objects.hum_cont, "HUMIDITY", 82, 22, 180, 26, &lv_font_inter_22,
+    objects.obj8 = label(objects.hum_cont, "Humidity", 82, 22, 180, 26, &lv_font_inter_22,
                          UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
     label(objects.hum_cont, "Living Room", 82, 50, 180, 22, &lv_font_plexmono_18,
           UI_D_MUTED, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
 
-    objects.hum_mood = status_pill(objects.hum_cont, 22, 94, 160, 42, "Comfortable",
+    objects.hum_mood = status_pill(objects.hum_cont, 22, 80, 160, 42, "Comfortable",
                                    UI_D_GREEN, UI_D_GREEN_SURF, &objects.hum_img, &objects.obj12);
 
     objects.hum_val = label(objects.hum_cont, "0", 22, 138, 140, 68, &lv_font_grotesk_64,
@@ -489,9 +495,9 @@ static void create_home_content(lv_obj_t *root)
     micro_label(objects.hum_cont, "COMFORT", 120, 356, 90, UI_D_GREEN, LV_TEXT_ALIGN_CENTER);
     micro_label(objects.hum_cont, "HUMID >60%", 216, 356, 90, UI_D_MUTED, LV_TEXT_ALIGN_RIGHT);
 
-    stat_cell(objects.hum_cont, 24, 396, 88, "MIN 24H", &objects.hum_stat_min);
-    stat_cell(objects.hum_cont, 120, 396, 88, "AVG 24H", &objects.hum_stat_avg);
-    stat_cell(objects.hum_cont, 216, 396, 88, "MAX 24H", &objects.hum_stat_max);
+    stat_cell(objects.hum_cont, 24, 396, 88, "MIN 24H", "%", &objects.hum_stat_min);
+    stat_cell(objects.hum_cont, 120, 396, 88, "AVG 24H", "%", &objects.hum_stat_avg);
+    stat_cell(objects.hum_cont, 216, 396, 88, "MAX 24H", "%", &objects.hum_stat_max);
 
     objects.hub_state_cont = NULL;
     objects.obj2 = NULL;
@@ -743,7 +749,7 @@ static void create_option_row(lv_obj_t *parent, lv_obj_t **handle, lv_obj_t **ti
     lv_obj_set_size(row, PAGE_W, 156);
     ui_style_card_light(row, 24);
     lv_obj_t *icon_box = panel(row, 24, 21, 114, 114, 28);
-    icon(icon_box, img, 0, 0, 342, accent, true);
+    icon(icon_box, img, 30, 30, 342, accent, true);
     *title_handle = label(row, title, 162, 34, 450, 40, &lv_font_inter_22,
                           UI_D_HEADING, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
     *sub_handle = label(row, sub, 162, 84, 450, 34, &lv_font_plexmono_18,
@@ -800,7 +806,7 @@ void create_screen_sensor_nodes_setting()
     lv_obj_set_pos(objects.add_sensor_button, PAGE_X, 1140);
     lv_obj_set_size(objects.add_sensor_button, PAGE_W, 96);
     ui_style_card_light(objects.add_sensor_button, 20);
-    objects.obj45 = label(objects.add_sensor_button, "+ Add Another Sensor", 0, 10, PAGE_W - 60, 96,
+    objects.obj45 = label(objects.add_sensor_button, "+ Add Another Sensor", 0, 50, PAGE_W - 60, 96,
                           &lv_font_inter_30, UI_D_GREEN,
                           LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_DOT);
     lv_obj_align(objects.obj45, LV_ALIGN_CENTER, -30, 0);

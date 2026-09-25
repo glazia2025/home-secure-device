@@ -105,8 +105,8 @@ typedef struct {
 
 #define WD_MAX          10
 #define WD_POLL_MS      30000  /* heartbeat: pull the child table this often (events are rare; latency isn't critical) */
-#define WD_START_MS     15000  /* grace after Thread net-up before the first poll — let sensors (re)attach */
-#define WD_MISS_LIMIT   2      /* consecutive snapshots absent before declaring a sensor not-in-mesh (debounce) */
+#define WD_START_MS     25000  /* grace after Thread net-up before the first poll — let sensors (re)attach */
+#define WD_MISS_LIMIT   4      /* consecutive snapshots absent before declaring a sensor not-in-mesh (debounce) */
 
 static wd_entry_t        s_wd[WD_MAX];
 static SemaphoreHandle_t s_wd_mutex;
@@ -367,6 +367,8 @@ joined_confirm:
 
     case IPC_EVT_SENSOR_DATA: {
         if (len < 9) break;          /* need at least eui64 + 1 byte JSON */
+        if (len >= 256) len = 255;
+        ((uint8_t *)payload)[len] = '\0';
         char hex[17];
         eui64_to_hex(payload, hex);
 

@@ -17,6 +17,7 @@ extern const lv_font_t lv_font_grotesk_34;
 extern const lv_font_t lv_font_inter_30;
 extern const lv_font_t lv_font_inter_22;
 extern const lv_font_t lv_font_plexmono_18;
+extern const lv_font_t lv_font_plexmono_14;
 
 #define lv_font_montserrat_8  lv_font_caskaydia_28
 #define lv_font_montserrat_10 lv_font_caskaydia_32
