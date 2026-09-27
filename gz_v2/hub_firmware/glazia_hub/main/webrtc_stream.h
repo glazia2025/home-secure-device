@@ -23,8 +23,16 @@ void webrtc_stream_init(void);
 void webrtc_stream_start(const char *turn_user, const char *turn_psw);
 
 /* The viewer left, the control WS dropped, or we go offline — tear the session
- * down (peer + camera) and return heap to the idle baseline. Idempotent. */
+ * down (peer + camera) and return heap to the idle baseline. Idempotent.
+ * NOTE: this runs the heavy esp_peer_close()/DTLS teardown synchronously and
+ * uses a lot of stack — never call it from the websocket client task. Callers
+ * on a WS/event context must use webrtc_stream_request_stop() instead. */
 void webrtc_stream_stop(void);
+
+/* Non-blocking teardown request: schedules webrtc_stream_stop() on a dedicated
+ * worker task with an adequately-sized stack. Safe to call from the websocket
+ * client task / event handlers; overlapping requests collapse into one. */
+void webrtc_stream_request_stop(void);
 
 /* Remote SDP answer received on the control WS (raw SDP string). */
 void webrtc_stream_on_answer(const char *sdp_str);

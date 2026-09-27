@@ -138,8 +138,8 @@ static void handle_viewer_ready(void)
 
 static void handle_viewer_gone(void)
 {
-    ESP_LOGI(TAG, "viewer-gone → webrtc_stream_stop");
-    webrtc_stream_stop();
+    ESP_LOGI(TAG, "viewer-gone → webrtc_stream_request_stop");
+    webrtc_stream_request_stop();   /* defer: never run esp_peer_close on the WS task stack */
 }
 
 static void handle_answer(cJSON *root)
@@ -350,7 +350,7 @@ static void websocket_event_handler(void *handler_args,
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Hub control websocket disconnected");
-        webrtc_stream_stop();
+        webrtc_stream_request_stop();   /* defer: this handler runs on the WS task */
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGW(TAG, "Hub control websocket error");

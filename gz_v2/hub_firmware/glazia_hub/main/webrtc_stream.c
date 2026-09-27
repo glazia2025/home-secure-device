@@ -21,8 +21,13 @@ static const char *TAG = "WEBRTC";
  * Geometry is learned from the sensor at start (camera_csi_width/height) — the
  * OV5647's smallest CSI mode (800x640, both 16-aligned so the H.264 encoder is
  * happy) approximates the requested VGA target. */
-#define STREAM_FPS      15
-#define STREAM_BITRATE  800000
+/* 10 fps / 500 kbps: with the SDIO DMA mempool back in internal RAM (sdkconfig:
+ * ESP_HOSTED_MEMPOOL_PREFER_SPIRAM unset), lowering the encode rate cuts encoder PSRAM
+ * read traffic and WiFi packet cadence, giving the single MSPI/PSRAM bus and the SDIO
+ * cache-coherency path more slack under a live call. The link is TURN-relay limited
+ * anyway, so 10 fps costs little in practice. */
+#define STREAM_FPS      12
+#define STREAM_BITRATE  500000
 
 /* HW encoder input format. On this P4 rev-1 silicon the hardware H.264 encoder
  * accepts ONLY O_UYY_E_VYY (YUV420, odd lines U Y Y…, even lines V Y Y…), which
@@ -36,7 +41,7 @@ static const char *TAG = "WEBRTC";
  * SRTP/AES + lwIP socket send, a deep stack-hungry chain. 8K overflowed mid-send
  * and corrupted lwIP heap metadata (crash in tcpip_thread); the proven gz_v1
  * cam firmware uses 32K. The static-task create size MUST equal the alloc size. */
-#define WEBRTC_VIDEO_STACK 32768
+#define WEBRTC_VIDEO_STACK 8192
 // #define WEBRTC_VIDEO_STACK 49152
 
 
@@ -218,15 +223,11 @@ static int on_state_cb(esp_peer_state_t state, void *ctx)
         if (s_running && s_video_task == NULL && s_video_stack) {
             s_video_task = xTaskCreateStaticPinnedToCore(
                 video_task_fn, "wrtc_video", WEBRTC_VIDEO_STACK, NULL, 4,
-                s_video_stack, &s_video_tcb, 1);
+                s_video_stack, &s_video_tcb, 0);
             if (!s_video_task) {
                 ESP_LOGE(TAG, "video task create failed");
                 s_running = false; s_connected = false;
-                if (!s_stop_scheduled) {
-                    s_stop_scheduled = true;
-                    if (xTaskCreate(deferred_stop_task, "wrtc_stop", 4096, NULL, 6, NULL) != pdPASS)
-                        s_stop_scheduled = false;
-                }
+                webrtc_stream_request_stop();
             }
         }
         break;
@@ -234,11 +235,7 @@ static int on_state_cb(esp_peer_state_t state, void *ctx)
     case ESP_PEER_STATE_DISCONNECTED:
         ESP_LOGW(TAG, "WebRTC disconnected/failed — scheduling stop");
         s_running = false; s_connected = false;
-        if (!s_stopping && !s_stop_scheduled) {
-            s_stop_scheduled = true;
-            if (xTaskCreate(deferred_stop_task, "wrtc_stop", 4096, NULL, 6, NULL) != pdPASS)
-                s_stop_scheduled = false;
-        }
+        if (!s_stopping) webrtc_stream_request_stop();
         break;
     default:
         break;
@@ -275,19 +272,31 @@ static void video_task_fn(void *arg)
     log_heap("H264 encoder opened");
 
     /* The HW encoder invalidates this output buffer with an M2C esp_cache_msync
-     * that does NOT set the UNALIGNED flag (esp_h264_cache.c), so its start
-     * address must be cache-line aligned — otherwise the invalidate fails and the
-     * CPU sends esp_peer stale/garbage H264 and nothing renders. Align to 128. */
+     * that does NOT set the UNALIGNED flag (esp_h264_cache.c), so each buffer's
+     * start address must be cache-line aligned (align to 128).
+     *
+     * We allocate a ring of H264_OUT_BUFS buffers and rotate through them so that
+     * esp_peer_send_video() always has at least (H264_OUT_BUFS - 1) frames of slack
+     * before the encoder can reuse a buffer. This prevents the race where the RTP/
+     * SRTP sender is still reading a buffer that the encoder is already overwriting,
+     * which was the leading PSRAM corruption hypothesis. Cost: 3 × ~1 MB PSRAM. */
+#define H264_OUT_BUFS 2
     size_t out_cap = ((size_t)w * h * 2 + 127) & ~(size_t)127;   /* worst case ~ raw size */
-    uint8_t *h264_buf = heap_caps_aligned_calloc(128, 1, out_cap, MALLOC_CAP_SPIRAM);
-    if (!h264_buf) {
-        ESP_LOGE(TAG, "H264 out buffer alloc failed (%u B)", (unsigned)out_cap);
-        esp_h264_enc_close(enc); esp_h264_enc_del(enc);
-        s_video_task = NULL; vTaskDelete(NULL); return;
+    uint8_t *h264_bufs[H264_OUT_BUFS] = { NULL };
+    for (int i = 0; i < H264_OUT_BUFS; i++) {
+        h264_bufs[i] = heap_caps_aligned_calloc(128, 1, out_cap, MALLOC_CAP_SPIRAM);
+        if (!h264_bufs[i]) {
+            ESP_LOGE(TAG, "H264 out buffer[%d] alloc failed (%u B)", i, (unsigned)out_cap);
+            for (int j = 0; j < i; j++) heap_caps_free(h264_bufs[j]);
+            esp_h264_enc_close(enc); esp_h264_enc_del(enc);
+            s_video_task = NULL; vTaskDelete(NULL); return;
+        }
     }
+    int h264_idx = 0;
 
     ESP_LOGI(TAG, "Streaming H264 %dx%d @ %dfps", w, h, STREAM_FPS);
     uint32_t pts = 0;
+    uint32_t frame_count = 0;   /* DIAG: crash-cause triage (remove once root-caused) */
 
     while (s_running && s_connected) {
         uint8_t *frame = NULL;
@@ -297,12 +306,31 @@ static void video_task_fn(void *arg)
             continue;
         }
 
+        static TickType_t last_frame_tick = 0;
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_frame_tick) < pdMS_TO_TICKS(1000 / STREAM_FPS)) {
+            continue;
+        }
+        last_frame_tick = now;
+
+        /* DIAG (~every 2 s): headroom right up to the crash. hwm→0 ⇒ stack overflow (H1);
+         * int_free collapsing ⇒ OOM/heap corruption (H3); both stable ⇒ MSPI/PSRAM-stack
+         * cache corruption (H2). Cross-reference with the flash coredump backtrace. */
+        if ((frame_count++ % 30) == 0) {
+            ESP_LOGW(TAG, "diag: vid_hwm=%u words int_largest=%u int_free=%u psram=%u",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        }
+
+        uint8_t *obuf = h264_bufs[h264_idx];
         esp_h264_enc_in_frame_t in = {
             .raw_data = { .buffer = frame, .len = frame_len },
             .pts      = pts,
         };
         esp_h264_enc_out_frame_t out = {
-            .raw_data = { .buffer = h264_buf, .len = out_cap },
+            .raw_data = { .buffer = obuf, .len = out_cap },
         };
         pts += (1000 / STREAM_FPS);
 
@@ -310,17 +338,20 @@ static void video_task_fn(void *arg)
         if (herr == ESP_H264_ERR_OK && out.length > 0) {
             esp_peer_video_frame_t vf = {
                 .pts  = out.pts,
-                .data = h264_buf,
+                .data = obuf,
                 .size = (int)out.length,
             };
             esp_peer_send_video(s_peer, &vf);
+            /* Advance the ring — encoder won't touch this slot again for
+             * (H264_OUT_BUFS - 1) frames, giving the sender time to finish. */
+            h264_idx = (h264_idx + 1) % H264_OUT_BUFS;
         } else if (herr != ESP_H264_ERR_OK) {
             ESP_LOGW(TAG, "encode err %d", herr);
         }
         vTaskDelay(1);
     }
 
-    heap_caps_free(h264_buf);
+    for (int i = 0; i < H264_OUT_BUFS; i++) heap_caps_free(h264_bufs[i]);
     esp_h264_enc_close(enc);
     esp_h264_enc_del(enc);
     ESP_LOGI(TAG, "Video task exit");
@@ -472,8 +503,12 @@ void webrtc_stream_init(void)
     s_cert_ready = xSemaphoreCreateBinary();
     if (!s_cert_ready) { ESP_LOGE(TAG, "cert semaphore alloc failed"); return; }
 
-    s_loop_stack  = heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
-    s_video_stack = heap_caps_malloc(WEBRTC_VIDEO_STACK, MALLOC_CAP_SPIRAM);
+    // s_loop_stack  = heap_caps_aligned_alloc(16, 16384, MALLOC_CAP_SPIRAM);
+    // s_video_stack = heap_caps_aligned_alloc(16, WEBRTC_VIDEO_STACK, MALLOC_CAP_SPIRAM);
+
+    s_loop_stack  = heap_caps_aligned_alloc(16, 16384, MALLOC_CAP_INTERNAL);
+    s_video_stack = heap_caps_aligned_alloc(16, 8192, MALLOC_CAP_INTERNAL);
+
     if (!s_loop_stack || !s_video_stack) {
         ESP_LOGE(TAG, "PSRAM stack alloc failed — streaming unavailable");
         return;
@@ -608,4 +643,18 @@ static void deferred_stop_task(void *arg)
     s_stop_scheduled = false;
     webrtc_stream_stop();
     vTaskDelete(NULL);
+}
+
+/* Schedule teardown on a dedicated worker with a stack large enough for the
+ * esp_peer_close()/DTLS/mbedTLS unwind. webrtc_stream_stop() must NEVER run on
+ * the websocket client task: its 12 KB stack is already carrying WSS TLS + the
+ * RX buffer + cJSON, and stacking the deep close on top overruns it — the
+ * end-of-stack watchpoint (CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK) then trips
+ * an MCAUSE=3 Breakpoint. s_stop_scheduled de-dupes overlapping requests. */
+void webrtc_stream_request_stop(void)
+{
+    if (s_stop_scheduled) return;
+    s_stop_scheduled = true;
+    if (xTaskCreate(deferred_stop_task, "wrtc_stop", 12288, NULL, 6, NULL) != pdPASS)
+        s_stop_scheduled = false;
 }

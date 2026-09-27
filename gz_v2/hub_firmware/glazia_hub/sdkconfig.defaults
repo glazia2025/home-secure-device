@@ -138,13 +138,16 @@ CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
 # SDIO RX mode: streaming=y matches p4_wifi ground truth.
 CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
 
-# Allocate the ESP-Hosted SDIO transport DMA mempool (buf_mp_g, sdio_drv.c) from PSRAM
-# first, falling back to internal DMA RAM only if PSRAM is full. On the P4 the GDMA reaches
-# PSRAM through cache, so this is the vendor-recommended setting for memory-intensive P4
-# workloads (the Kconfig help cites sustained 1080p streaming — exactly this hub's WebRTC
-# path). It moves ~tens of KB of transport buffers out of the scarce internal low-RAM,
-# which is what makes room for the coredump panic-handler IRAM without the boot-time
-# `sdio_mempool_create ... no mem` OOM. Small transport-latency cost, acceptable here.
+# Keep the ESP-Hosted SDIO transport DMA mempool (buf_mp_g, sdio_drv.c) in PSRAM (=y).
+# HARDWARE-VERIFIED THE OTHER WAY: setting this =n (mempool in internal DMA RAM) DOES NOT BOOT on this
+# build — ESP-Hosted then allocates buf_mp_g (~50 KB) plus all the WiFi/serial/RPC transport buffers out
+# of the scarce internal DMA heap, which our fuller build (DPI display + camera) can't spare, so
+# sdio_mempool_create() returns NULL → `assert(buf_mp_g)` / `HS_MP: mempool create failed: no mem`
+# in do_global_ctors, every boot. (The p4_wifi reference tolerates =n only because it has no display/
+# camera eating internal RAM.) So =y is the only bootable state. On the P4 GDMA reaches PSRAM through
+# cache, so the SDIO buffers work there. If the streaming cache-maintenance deadlock (HP_SYS_HP_WDT_RESET,
+# s_get_cache_state) returns, fix it from the IRAM-panic backtrace at its source — NOT by starving
+# internal RAM with =n, which just trades a late crash for a boot loop.
 CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
 
 # Display renders in LVGL direct mode into the DPI panel's two PSRAM framebuffers
@@ -154,11 +157,11 @@ CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
 # letting it silently corrupt memory and crash the scheduler later.
 CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
-# ── Coredump-to-flash: survives reboot, decoded by esp-coredump ───────────
-# UART coredump gets garbled on the P4 when a core is wedged (cross-core cache
-# stall → INT_WDT reboots before the dump finishes). Flash coredump writes to
-# the coredump partition (partitions.csv: 1 MB at 0xF00000), survives reboot,
-# and is decoded by `espcoredump.py info_corefile -t b64 -c sha256 build/glazia_hub.elf`.
+# ── Coredump: DISABLED ───────────
+# Flash coredump was abandoned: the stored dump's SHA is from an overwritten ELF and can never match
+# the running app, so `idf.py coredump-info` always fails, and it just spams `Core dump flash config is
+# corrupted`. The IRAM panic handler (below) prints a full, decoded backtrace over serial instead — no
+# coredump needed, and this frees the reserved 1792 B coredump stack.
 CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
 
 # ── DIAGNOSTIC BUILD (round 6): catch the internal-RAM corruptor in the act ────────────────
@@ -173,3 +176,29 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
 # Give any panic/abort ~5 s to finish printing the backtrace + coredump before the interrupt
 # watchdog reboots (was 800 ms — too short once a core is wedged). Revert to 800 after.
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=5000
+# Run the panic handler from IRAM so it can print a full, readable register dump + backtrace even when
+# the crash happens with the CPU cache disabled/stalled. Without this the panic path executes from cached
+# flash and produces garbage during a cache-maintenance deadlock (the HP_SYS_HP_WDT_RESET we're chasing),
+# so we never see the culprit task/backtrace. Cheap; keep it.
+CONFIG_ESP_PANIC_HANDLER_IRAM=y
+# NOTE: COMPREHENSIVE heap poisoning was tried here and BACKFIRED — its per-alloc canaries dropped
+# the largest free internal block from 63488 to 57332, just under the 57600 B the HW H264 reference
+# frame needs, so the encoder OOM'd on every stream attempt (No memory for reference frame). Left
+# DISABLED. If poisoning is needed to localise the mid-stream SDIO corruption, use LIGHT (~1 B/alloc)
+# — it fits now that the SDIO mempool moved to PSRAM (below) and freed internal headroom.
+CONFIG_HEAP_POISONING_DISABLED=y
+
+# Execute .text/.rodata from PSRAM (XIP), not from the flash cache. ROOT-CAUSE FIX for the
+# HP_SYS_HP_WDT_RESET cross-core deadlock (CONFIRMED backtrace: Core0 wedged in
+# esp_cpu_compare_and_set → spinlock_acquire → xPortEnterCriticalTimeout, port.c:545; the panic
+# then DOUBLE-FAULTED in panic_print_str reading a flash-resident format string — proof the FLASH
+# CACHE WAS DISABLED at crash time). On the P4 flash and PSRAM are independent MSPI controllers
+# (SOC_MEMSPI_IS_INDEPENDENT=y): when a flash cache-disable op runs (NVS/flash write, or any
+# cache-maintenance window), code in the flash cache is unreachable, so a core mid-critical-section
+# can't make progress and the other core spins forever on its spinlock → INT_WDT. The known-good
+# WiFi+BLE reference (sesnor_test/p4_wifi) has a byte-identical cache/SPIRAM/flash/mbedTLS/SDIO
+# config and never deadlocks — the ONLY difference is it has no MIPI-DSI DPI PSRAM DMA making that
+# cache-off window fatal. With XIP the CPU fetches from PSRAM (separate bus, mostly L2-cache hits)
+# so execution + the panic printer survive a flash-cache-disable. Costs ~2.6 MB PSRAM for code
+# (32 MB part, ~31.5 MB free) and a little PSRAM bandwidth; acceptable.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y

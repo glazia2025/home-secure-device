@@ -110,17 +110,22 @@ static esp_err_t sensor_bringup(void)
     if (!s_cam) { ESP_LOGE(TAG, "no MIPI-CSI camera sensor detected"); return ESP_ERR_NOT_FOUND; }
 
     esp_cam_sensor_format_array_t fmts = {0};
+    ESP_LOGI(TAG, "bringup: query_format...");
     esp_cam_sensor_query_format(s_cam, &fmts);
+    ESP_LOGI(TAG, "bringup: query_format done (%d fmts)", (int)fmts.count);
     const esp_cam_sensor_format_t *fmt = select_smallest_format(&fmts);
     if (!fmt) { ESP_LOGE(TAG, "sensor exposes no usable format"); return ESP_ERR_NOT_SUPPORTED; }
 
+    ESP_LOGI(TAG, "bringup: set_format '%s'...", fmt->name);
     ESP_RETURN_ON_ERROR(esp_cam_sensor_set_format(s_cam, fmt), TAG, "set_format");
     s_width  = fmt->width;
     s_height = fmt->height;
     ESP_LOGI(TAG, "using sensor format '%s' %dx%d", fmt->name, s_width, s_height);
 
     int on = 1;
+    ESP_LOGI(TAG, "bringup: S_STREAM on...");
     ESP_RETURN_ON_ERROR(esp_cam_sensor_ioctl(s_cam, ESP_CAM_SENSOR_IOC_S_STREAM, &on), TAG, "S_STREAM");
+    ESP_LOGI(TAG, "bringup: S_STREAM on done");
     return ESP_OK;
 }
 
@@ -147,10 +152,14 @@ esp_err_t camera_csi_start(void)
         .byte_swap_en           = false,
         .queue_items            = 1,
     };
+    ESP_LOGI(TAG, "start: new_csi_ctlr...");
     ret = esp_cam_new_csi_ctlr(&csi_cfg, &s_ctlr);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "csi ctlr: %s", esp_err_to_name(ret)); goto fail; }
+    ESP_LOGI(TAG, "start: new_csi_ctlr done");
 
-    s_frame_len = (size_t)s_width * (size_t)s_height * 3 / 2;         /* YUV420 = 1.5 B/px */
+    int w = (s_width + 15) & ~15;
+    int h = (s_height + 15) & ~15;
+    s_frame_len = (size_t)w * (size_t)h * 3 / 2;         /* YUV420 = 1.5 B/px (padded for H264) */
     size_t aligned = (s_frame_len + 127) & ~(size_t)127;             /* HW H.264 DMA alignment */
     s_frame = heap_caps_aligned_calloc(128, 1, aligned, MALLOC_CAP_SPIRAM);
     if (!s_frame) { ESP_LOGE(TAG, "frame buffer alloc failed (%u B)", (unsigned)aligned); ret = ESP_ERR_NO_MEM; goto fail; }
@@ -180,13 +189,17 @@ esp_err_t camera_csi_start(void)
         .h_res                  = s_width,
         .v_res                  = s_height,
     };
+    ESP_LOGI(TAG, "start: isp new_processor...");
     ret = esp_isp_new_processor(&isp_cfg, &s_isp);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "isp new: %s", esp_err_to_name(ret)); goto fail; }
+    ESP_LOGI(TAG, "start: isp enable...");
     ret = esp_isp_enable(s_isp);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "isp enable: %s", esp_err_to_name(ret)); goto fail; }
 
+    ESP_LOGI(TAG, "start: ctlr_start...");
     ret = esp_cam_ctlr_start(s_ctlr);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "ctlr start: %s", esp_err_to_name(ret)); goto fail; }
+    ESP_LOGI(TAG, "start: ctlr_start done");
 
     ESP_LOGI(TAG, "camera streaming %dx%d YUV420/O_UYY_E_VYY (%u B/frame)",
              s_width, s_height, (unsigned)s_frame_len);

@@ -341,9 +341,12 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_handle_t panel,
     return false;
 }
 
+static volatile uint32_t s_vsync_count;   /* incremented every DPI refresh-done; heartbeat probe */
+
 static bool IRAM_ATTR on_dpi_vsync(esp_lcd_panel_handle_t panel,
         esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
 {
+    s_vsync_count++;
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(s_vsync_sem, &woken);
     return woken == pdTRUE;
@@ -355,9 +358,11 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
 
     /* Drain any old vsync signals */
     xSemaphoreTake(s_vsync_sem, 0);
-    /* Block until the exact moment VBLANK starts */
-    xSemaphoreTake(s_vsync_sem, portMAX_DELAY);
 
+    /* Wait for VBLANK so PPA copy doesn't collide with panel scan-out (fixes cyan flicker) */
+    // xSemaphoreTake(s_vsync_sem, pdMS_TO_TICKS(100));
+
+    /* Issue the PPA (DMA2D) partial copy */
     esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
 
     if (xSemaphoreTake(s_flush_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
@@ -383,6 +388,17 @@ static void touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 }
 
 static void lv_tick_cb(void *arg) { lv_tick_inc(5); }
+
+/* Heartbeat: log how many DPI refresh-done ISRs fired in the last window. If the panel loses lock the
+ * delta drops to 0 while the rest of the system keeps running — pinpoints a scanout death vs a CPU hang. */
+static void display_heartbeat_cb(void *arg)
+{
+    static uint32_t last;
+    uint32_t now = s_vsync_count;
+    ESP_LOGI(TAG, "display: vsync +%lu (total %lu)",
+             (unsigned long)(now - last), (unsigned long)now);
+    last = now;
+}
 
 static void lvgl_task(void *arg)
 {
@@ -415,9 +431,28 @@ static esp_err_t dsi_hw_init(void)
     err = esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &io);
     if (err != ESP_OK) { ESP_LOGE(TAG, "dbi io: %s", esp_err_to_name(err)); return err; }
 
-    /* ── DPI (80 MHz, validated porch values) + ILI9881C panel ──────────── */
+    /* ── DPI + ILI9881C panel ────────────────────────────────────────────── */
+    /* Keep the macro's validated 80 MHz pixel clock. With the 1042×1332 porches this macro defines,
+     * 80 MHz = 57.6 Hz — the rate the ILI9881C timing controller is tuned for and the only value that
+     * gives a smooth, lock-stable panel. Dropping it runs the panel off-spec: 45 MHz → ~32 Hz lost DSI
+     * lock ~30 s in (cyan → fade to black at idle), and 50 MHz → ~36 Hz was visibly laggy.
+     *
+     * Earlier builds detuned this clock chasing an INT-WDT reboot (HP_SYS_HP_WDT_RESET, both cores in
+     * hal/cache_hal.c:s_get_cache_state) blamed on DPI DMA starving the CPU's PSRAM XIP fetch. That
+     * theory was CONFOUNDED: the actual crash at ~21 s was a WebRTC-teardown stack overflow —
+     * webrtc_stream_stop() ran esp_peer_close()'s DTLS/mbedTLS unwind on the websocket client task's
+     * stack, which the end-of-stack watchpoint caught as an MCAUSE=3 Breakpoint. That is fixed in
+     * webrtc_stream.c by deferring teardown to a dedicated 12 KB worker, so the clock no longer needs
+     * detuning. If a genuine idle s_get_cache_state INT-WDT ever recurs, fix the flash op (defer it so
+     * it doesn't coincide with scanout) — do NOT lower this clock. Anti-tearing is num_fbs=2 +
+     * full_refresh below, not the clock. */
     esp_lcd_dpi_panel_config_t dpi_cfg = ILI9881C_720_1280_PANEL_60HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB565);
-    dpi_cfg.dpi_clock_freq_mhz = 45;
+    dpi_cfg.dpi_clock_freq_mhz = 42;
+    /* Two driver-owned PSRAM framebuffers → tear-free vsync flip (kills the cyan flicker) and,
+     * crucially, lets LVGL render into these PSRAM FBs instead of internal draw buffers. That
+     * frees ~63 KB internal RAM for the HW H264 encoder's contiguous-internal reference frame
+        * (esp_h264_enc_hw_param.c) and lets the SDIO mempool leave the contended PSRAM/MSPI bus. */
+    dpi_cfg.num_fbs = 1;
     ili9881c_vendor_config_t vendor_cfg = {
         .mipi_config = {
             .dsi_bus    = dsi_bus,
@@ -447,31 +482,39 @@ static esp_err_t dsi_hw_init(void)
     esp_lcd_panel_disp_on_off(panel, true);
     s_panel = panel;
 
+    /* The two framebuffers the DPI driver allocated in PSRAM (num_fbs = 2).
+     * We keep them for the hardware panel, but LVGL will render into small internal buffers. */
+    // void *fb0 = NULL, *fb1 = NULL;
+    // err = esp_lcd_dpi_panel_get_frame_buffer(panel, 2, &fb0, &fb1);
+    // if (err != ESP_OK || !fb0 || !fb1) { ESP_LOGE(TAG, "get frame buffers: %s", esp_err_to_name(err)); return err; }
+
+    void *fb0 = NULL;
+    err = esp_lcd_dpi_panel_get_frame_buffer(panel, 1, &fb0);
+    if (err != ESP_OK || !fb0) { ESP_LOGE(TAG, "get frame buffers: %s", esp_err_to_name(err)); return err; }
+
     /* ── LVGL 8 — init, draw buffer, display driver ──────────────────────── */
     lv_init();
     s_lvgl_mux       = xSemaphoreCreateMutex();
     s_flush_done_sem = xSemaphoreCreateBinary();
     s_vsync_sem      = xSemaphoreCreateBinary();
 
-    /* 22-row draw buffer in internal SRAM; LVGL is told only 20 rows.  The extra
-     * 2 rows (2880 bytes) are a guard zone that absorbs any small lv_memcpy overrun
-     * from LVGL's blending pipeline without touching adjacent heap objects.
-     * Internal SRAM keeps the draw buffer off the MSPI bus — PSRAM draw buffers
-     * cause MSPI arbitration stalls with the DW-GDMA framebuffer stream, producing
-     * display flicker and Load access faults under load.  Heap allocation (not BSS)
-     * ensures SDIO mempools (allocated at do_global_ctors) are not affected. */
-    lv_color_t *buf1 = heap_caps_malloc(LCD_H_RES * 52 * sizeof(lv_color_t),
-                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    lv_color_t *buf2 = heap_caps_malloc(LCD_H_RES * 52 * sizeof(lv_color_t),
-                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!buf1 || !buf2) { ESP_LOGE(TAG, "draw buffer alloc failed"); return ESP_ERR_NO_MEM; }
-    lv_disp_draw_buf_init(&s_draw_buf, buf1, buf2, LCD_H_RES * 50);
+    /* Allocate small internal draw buffers for LVGL to avoid PSRAM cache deadlocks */
+    size_t draw_lines = 10;
+    void *draw_buf1 = heap_caps_malloc(LCD_H_RES * draw_lines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    // void *draw_buf2 = NULL; // Disabled to save 43KB of internal RAM
+
+    void *draw_buf2 = heap_caps_malloc(LCD_H_RES * draw_lines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!draw_buf1 || !draw_buf2) { ESP_LOGE(TAG, "OOM internal draw buffer"); return ESP_ERR_NO_MEM; }
+
+    lv_disp_draw_buf_init(&s_draw_buf, draw_buf1, draw_buf2, LCD_H_RES * draw_lines);
+
 
     lv_disp_drv_init(&s_disp_drv);
-    s_disp_drv.hor_res  = LCD_H_RES;
-    s_disp_drv.ver_res  = LCD_V_RES;
-    s_disp_drv.flush_cb = lvgl_flush_cb;
-    s_disp_drv.draw_buf = &s_draw_buf;
+    s_disp_drv.hor_res      = LCD_H_RES;
+    s_disp_drv.ver_res      = LCD_V_RES;
+    s_disp_drv.flush_cb     = lvgl_flush_cb;
+    s_disp_drv.draw_buf     = &s_draw_buf;
+    s_disp_drv.full_refresh = 0;
     s_lvgl_disp = lv_disp_drv_register(&s_disp_drv);
     ESP_LOGI(TAG, "LVGL display driver registered");
 
@@ -508,6 +551,12 @@ static esp_err_t dsi_hw_init(void)
     esp_timer_create_args_t tick_args = { .callback = lv_tick_cb, .name = "lv_tick" };
     ESP_RETURN_ON_ERROR(esp_timer_create(&tick_args, &tick_timer), TAG, "tick timer create");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(tick_timer, 5000), TAG, "tick timer start");
+
+    /* ── DPI vsync heartbeat (2 s) — scanout-alive probe ─────────────────────── */
+    esp_timer_handle_t hb_timer;
+    esp_timer_create_args_t hb_args = { .callback = display_heartbeat_cb, .name = "disp_hb" };
+    ESP_RETURN_ON_ERROR(esp_timer_create(&hb_args, &hb_timer), TAG, "hb timer create");
+    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(hb_timer, 2000000), TAG, "hb timer start");
 
     ESP_LOGI(TAG, "MIPI-DSI %dx%d + GT911 touch ready", LCD_H_RES, LCD_V_RES);
     return ESP_OK;
