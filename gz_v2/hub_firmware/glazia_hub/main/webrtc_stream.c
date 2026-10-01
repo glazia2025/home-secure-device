@@ -41,7 +41,7 @@ static const char *TAG = "WEBRTC";
  * SRTP/AES + lwIP socket send, a deep stack-hungry chain. 8K overflowed mid-send
  * and corrupted lwIP heap metadata (crash in tcpip_thread); the proven gz_v1
  * cam firmware uses 32K. The static-task create size MUST equal the alloc size. */
-#define WEBRTC_VIDEO_STACK 8192
+#define WEBRTC_VIDEO_STACK 6144
 // #define WEBRTC_VIDEO_STACK 49152
 
 
@@ -254,7 +254,7 @@ static void video_task_fn(void *arg)
 
     esp_h264_enc_cfg_hw_t enc_cfg = {
         .pic_type = STREAM_PIC_TYPE,                 /* rev-1 P4 hw encoder: O_UYY_E_VYY only */
-        .gop      = STREAM_FPS,
+        .gop      = STREAM_FPS / 2,
         .fps      = STREAM_FPS,
         .res      = { .width = w, .height = h },
         .rc       = { .bitrate = STREAM_BITRATE, .qp_min = 20, .qp_max = 40 },
@@ -281,7 +281,7 @@ static void video_task_fn(void *arg)
      * SRTP sender is still reading a buffer that the encoder is already overwriting,
      * which was the leading PSRAM corruption hypothesis. Cost: 3 × ~1 MB PSRAM. */
 #define H264_OUT_BUFS 2
-    size_t out_cap = ((size_t)w * h * 2 + 127) & ~(size_t)127;   /* worst case ~ raw size */
+    size_t out_cap = (256 * 1024 + 127) & ~(size_t)127;
     uint8_t *h264_bufs[H264_OUT_BUFS] = { NULL };
     for (int i = 0; i < H264_OUT_BUFS; i++) {
         h264_bufs[i] = heap_caps_aligned_calloc(128, 1, out_cap, MALLOC_CAP_SPIRAM);
@@ -385,6 +385,8 @@ static void cert_pregen_task(void *arg)
 /* Cleanly abort a partially-brought-up session (stop was requested while we were
  * still starting). Releases only what we managed to acquire, then clears the flag
  * so webrtc_stream_stop() can finish. */
+static volatile uint32_t s_start_gen = 0;
+
 static void start_abort(void)
 {
     ESP_LOGW(TAG, "start aborted mid-bringup — cleaning up");
@@ -405,11 +407,14 @@ static void start_abort(void)
 
 static void start_task(void *arg)
 {
+    uint32_t my_gen = *(uint32_t *)arg;
+    free(arg);
+
     /* Wait for the DTLS cert (fast if pre-gen already finished). */
     xSemaphoreTake(s_cert_ready, portMAX_DELAY);
     xSemaphoreGive(s_cert_ready);
 
-    if (!s_running) { start_abort(); return; }   /* stop arrived before we even started */
+    if (!s_running || my_gen != s_start_gen) { start_abort(); return; }   /* stop arrived before we even started */
 
     if (camera_csi_start() != ESP_OK) {
         ESP_LOGE(TAG, "camera start failed — aborting session");
@@ -421,7 +426,7 @@ static void start_task(void *arg)
     s_stream_w = camera_csi_width();
     s_stream_h = camera_csi_height();
 
-    if (!s_running) { start_abort(); return; }
+    if (!s_running || my_gen != s_start_gen) { start_abort(); return; }
 
     s_ice_servers[0] = (esp_peer_ice_server_cfg_t){
         .stun_url = "stun:stun.l.google.com:19302", .user = NULL, .psw = NULL };
@@ -455,7 +460,7 @@ static void start_task(void *arg)
         .on_msg            = on_msg_cb,
     };
 
-    if (!s_running) { start_abort(); return; }
+    if (!s_running || my_gen != s_start_gen) { start_abort(); return; }
 
     if (esp_peer_open(&cfg, esp_peer_get_default_impl(), &s_peer) != ESP_PEER_ERR_NONE) {
         ESP_LOGE(TAG, "esp_peer_open failed");
@@ -467,7 +472,7 @@ static void start_task(void *arg)
     }
     log_heap("Peer opened");
 
-    if (!s_running) { start_abort(); return; }
+    if (!s_running || my_gen != s_start_gen) { start_abort(); return; }
 
     s_loop_task = xTaskCreateStaticPinnedToCore(
         loop_task_fn, "wrtc_loop", 16384, NULL, 5,
@@ -507,10 +512,10 @@ void webrtc_stream_init(void)
     // s_video_stack = heap_caps_aligned_alloc(16, WEBRTC_VIDEO_STACK, MALLOC_CAP_SPIRAM);
 
     s_loop_stack  = heap_caps_aligned_alloc(16, 16384, MALLOC_CAP_INTERNAL);
-    s_video_stack = heap_caps_aligned_alloc(16, 8192, MALLOC_CAP_INTERNAL);
+    s_video_stack = heap_caps_aligned_alloc(16, WEBRTC_VIDEO_STACK, MALLOC_CAP_INTERNAL);
 
     if (!s_loop_stack || !s_video_stack) {
-        ESP_LOGE(TAG, "PSRAM stack alloc failed — streaming unavailable");
+        ESP_LOGE(TAG, "internal stack alloc failed — streaming unavailable");
         return;
     }
 
@@ -538,6 +543,10 @@ void webrtc_stream_start(const char *turn_user, const char *turn_psw)
         return;
     }
 
+    s_start_gen++;
+    uint32_t *gen_arg = malloc(sizeof(uint32_t));
+    *gen_arg = s_start_gen;
+
     strlcpy(s_turn_user, turn_user ? turn_user : "", sizeof(s_turn_user));
     strlcpy(s_turn_psw,  turn_psw  ? turn_psw  : "", sizeof(s_turn_psw));
 
@@ -549,7 +558,8 @@ void webrtc_stream_start(const char *turn_user, const char *turn_psw)
     s_video_task        = NULL;
     s_start_in_progress = true;
 
-    if (xTaskCreate(start_task, "wrtc_start", 8192, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreate(start_task, "wrtc_start", 8192, gen_arg, 4, NULL) != pdPASS) {
+        free(gen_arg);
         ESP_LOGE(TAG, "start task create failed");
         s_running = false;
         s_start_in_progress = false;
@@ -618,6 +628,7 @@ void webrtc_stream_stop(void)
     /* Let the video + loop tasks exit before destroying what they touch. */
     for (int i = 0; i < 50 && (s_loop_task || s_video_task); ++i)
         vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(50));
 
     esp_peer_handle_t peer = s_peer;
     s_peer = NULL;

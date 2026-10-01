@@ -452,6 +452,7 @@ static esp_err_t dsi_hw_init(void)
      * crucially, lets LVGL render into these PSRAM FBs instead of internal draw buffers. That
      * frees ~63 KB internal RAM for the HW H264 encoder's contiguous-internal reference frame
         * (esp_h264_enc_hw_param.c) and lets the SDIO mempool leave the contended PSRAM/MSPI bus. */
+
     dpi_cfg.num_fbs = 1;
     ili9881c_vendor_config_t vendor_cfg = {
         .mipi_config = {
@@ -1500,7 +1501,7 @@ static void display_init_task(void *arg)
     s_display_state = DISPLAY_READY;
 
     /* Start LVGL task AFTER UI is fully built — eliminates init/render race. */
-    if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 32768, NULL, 5, NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 12288, NULL, 5, NULL, 1) != pdPASS) {
         ESP_LOGE(TAG, "lvgl task create failed");
         s_display_state = DISPLAY_FAILED;
         vTaskDelete(NULL);

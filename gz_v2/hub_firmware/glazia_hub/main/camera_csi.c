@@ -37,7 +37,9 @@ static esp_cam_sensor_device_t *s_cam;
 static esp_cam_ctlr_handle_t    s_ctlr;
 static isp_proc_handle_t        s_isp;
 
-static uint8_t *s_frame;                 /* single YUV422 frame buffer (PSRAM, cache-aligned) */
+static uint8_t *s_frame[2];                 /* two YUV422 frame buffers (PSRAM, cache-aligned) */
+static volatile int s_write_idx = 0;
+static volatile int s_read_idx  = -1;
 static size_t   s_frame_len;             /* w * h * 2 */
 static esp_cam_ctlr_trans_t s_trans;     /* buffer handed to the CSI driver each receive */
 static SemaphoreHandle_t s_frame_ready;  /* given by the CSI ISR when a frame lands in s_frame */
@@ -50,9 +52,8 @@ int camera_csi_height(void) { return s_height; }
  * (drop-latest: if the encoder is still busy we simply weren't in receive()). */
 static bool IRAM_ATTR on_get_new_trans(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t *t, void *user)
 {
-    esp_cam_ctlr_trans_t *cfg = (esp_cam_ctlr_trans_t *)user;
-    t->buffer = cfg->buffer;
-    t->buflen = cfg->buflen;
+    t->buffer = s_frame[s_write_idx];
+    t->buflen = s_frame_len;
     return false;
 }
 
@@ -60,6 +61,8 @@ static bool IRAM_ATTR on_get_new_trans(esp_cam_ctlr_handle_t h, esp_cam_ctlr_tra
  * video task waiting in camera_csi_get_frame(). Binary semaphore = drop-latest, no backlog. */
 static bool IRAM_ATTR on_trans_finished(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t *t, void *user)
 {
+    s_read_idx  = s_write_idx;
+    s_write_idx = 1 - s_write_idx;
     BaseType_t woken = pdFALSE;
     if (s_frame_ready) xSemaphoreGiveFromISR(s_frame_ready, &woken);
     return woken == pdTRUE;
@@ -161,9 +164,16 @@ esp_err_t camera_csi_start(void)
     int h = (s_height + 15) & ~15;
     s_frame_len = (size_t)w * (size_t)h * 3 / 2;         /* YUV420 = 1.5 B/px (padded for H264) */
     size_t aligned = (s_frame_len + 127) & ~(size_t)127;             /* HW H.264 DMA alignment */
-    s_frame = heap_caps_aligned_calloc(128, 1, aligned, MALLOC_CAP_SPIRAM);
-    if (!s_frame) { ESP_LOGE(TAG, "frame buffer alloc failed (%u B)", (unsigned)aligned); ret = ESP_ERR_NO_MEM; goto fail; }
-    s_trans.buffer = s_frame;
+    s_frame[0] = heap_caps_aligned_calloc(128, 1, aligned, MALLOC_CAP_SPIRAM);
+    s_frame[1] = heap_caps_aligned_calloc(128, 1, aligned, MALLOC_CAP_SPIRAM);
+    if (!s_frame[0] || !s_frame[1]) { 
+        ESP_LOGE(TAG, "frame buffer alloc failed (%u B)", (unsigned)aligned); 
+        ret = ESP_ERR_NO_MEM; 
+        goto fail; 
+    }
+    s_trans.buffer = s_frame[0];
+    s_write_idx = 0;
+    s_read_idx = -1;
     s_trans.buflen = s_frame_len;
 
     s_frame_ready = xSemaphoreCreateBinary();
@@ -212,7 +222,7 @@ fail:
 
 esp_err_t camera_csi_get_frame(uint8_t **out_buf, size_t *out_len)
 {
-    if (!s_ctlr || !s_frame || !s_frame_ready) return ESP_ERR_INVALID_STATE;
+    if (!s_ctlr || !s_frame[0] || !s_frame_ready) return ESP_ERR_INVALID_STATE;
 
     /* Wait for the CSI ISR (on_trans_finished) to report a DMA-completed frame in s_frame.
      * The driver runs free-running via on_get_new_trans — esp_cam_ctlr_receive() is NOT used
@@ -222,9 +232,11 @@ esp_err_t camera_csi_get_frame(uint8_t **out_buf, size_t *out_len)
      * exit cleanly, freeing the H.264 encoder rather than leaking its interrupt. */
     if (xSemaphoreTake(s_frame_ready, pdMS_TO_TICKS(200)) != pdTRUE) return ESP_ERR_TIMEOUT;
 
+    if (s_read_idx < 0) return ESP_ERR_NOT_FOUND;
+
     /* No manual esp_cache_msync here: the CSI driver already M2C-invalidates the completed
      * buffer (esp_cam_ctlr_csi.c) right before firing on_trans_finished. */
-    *out_buf = s_frame;
+    *out_buf = s_frame[s_read_idx];
     *out_len = s_frame_len;
     return ESP_OK;
 }
@@ -242,7 +254,8 @@ void camera_csi_stop(void)
     /* s_i2c_bus is borrowed from display_power.c — do NOT delete it here.
      * The MIPI D-PHY LDO is likewise owned by the display and stays acquired. */
     s_i2c_bus = NULL;
-    if (s_frame) { heap_caps_free(s_frame); s_frame = NULL; }
+    if (s_frame[0]) { heap_caps_free(s_frame[0]); s_frame[0] = NULL; }
+    if (s_frame[1]) { heap_caps_free(s_frame[1]); s_frame[1] = NULL; }
     /* Safe to delete now: the controller is stopped (ISR can no longer give the sem) and the
      * video task has already drained in webrtc_stream_stop() before reaching here. */
     if (s_frame_ready) { vSemaphoreDelete(s_frame_ready); s_frame_ready = NULL; }
