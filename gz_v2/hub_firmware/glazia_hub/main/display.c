@@ -1501,7 +1501,7 @@ static void display_init_task(void *arg)
     s_display_state = DISPLAY_READY;
 
     /* Start LVGL task AFTER UI is fully built — eliminates init/render race. */
-    if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 12288, NULL, 5, NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 26624, NULL, 5, NULL, 1) != pdPASS) {
         ESP_LOGE(TAG, "lvgl task create failed");
         s_display_state = DISPLAY_FAILED;
         vTaskDelete(NULL);

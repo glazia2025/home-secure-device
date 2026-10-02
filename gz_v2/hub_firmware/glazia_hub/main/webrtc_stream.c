@@ -26,8 +26,8 @@ static const char *TAG = "WEBRTC";
  * read traffic and WiFi packet cadence, giving the single MSPI/PSRAM bus and the SDIO
  * cache-coherency path more slack under a live call. The link is TURN-relay limited
  * anyway, so 10 fps costs little in practice. */
-#define STREAM_FPS      12
-#define STREAM_BITRATE  500000
+#define STREAM_FPS      15
+#define STREAM_BITRATE  250000
 
 /* HW encoder input format. On this P4 rev-1 silicon the hardware H.264 encoder
  * accepts ONLY O_UYY_E_VYY (YUV420, odd lines U Y Y…, even lines V Y Y…), which
@@ -41,7 +41,7 @@ static const char *TAG = "WEBRTC";
  * SRTP/AES + lwIP socket send, a deep stack-hungry chain. 8K overflowed mid-send
  * and corrupted lwIP heap metadata (crash in tcpip_thread); the proven gz_v1
  * cam firmware uses 32K. The static-task create size MUST equal the alloc size. */
-#define WEBRTC_VIDEO_STACK 6144
+#define WEBRTC_VIDEO_STACK 8192
 // #define WEBRTC_VIDEO_STACK 49152
 
 
