@@ -450,7 +450,7 @@ static esp_err_t dsi_hw_init(void)
      * frees ~63 KB internal RAM for the HW H264 encoder's contiguous-internal reference frame
         * (esp_h264_enc_hw_param.c) and lets the SDIO mempool leave the contended PSRAM/MSPI bus. */
 
-    dpi_cfg.num_fbs = 1;
+    dpi_cfg.num_fbs = 2;
     ili9881c_vendor_config_t vendor_cfg = {
         .mipi_config = {
             .dsi_bus    = dsi_bus,
@@ -497,7 +497,7 @@ static esp_err_t dsi_hw_init(void)
     s_vsync_sem      = xSemaphoreCreateBinary();
 
     /* Allocate small internal draw buffers for LVGL to avoid PSRAM cache deadlocks */
-    size_t draw_lines = 10;
+    size_t draw_lines = 40;
     void *draw_buf1 = heap_caps_malloc(LCD_H_RES * draw_lines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     // void *draw_buf2 = NULL; // Disabled to save 43KB of internal RAM
 
