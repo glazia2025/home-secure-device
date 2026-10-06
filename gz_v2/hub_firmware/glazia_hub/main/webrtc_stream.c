@@ -26,7 +26,7 @@ static const char *TAG = "WEBRTC";
  * read traffic and WiFi packet cadence, giving the single MSPI/PSRAM bus and the SDIO
  * cache-coherency path more slack under a live call. The link is TURN-relay limited
  * anyway, so 10 fps costs little in practice. */
-#define STREAM_FPS      15
+#define STREAM_FPS      12
 #define STREAM_BITRATE  250000
 
 /* HW encoder input format. On this P4 rev-1 silicon the hardware H.264 encoder

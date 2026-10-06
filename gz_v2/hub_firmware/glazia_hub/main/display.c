@@ -497,14 +497,17 @@ static esp_err_t dsi_hw_init(void)
     s_vsync_sem      = xSemaphoreCreateBinary();
 
     /* Allocate small internal draw buffers for LVGL to avoid PSRAM cache deadlocks */
-    size_t draw_lines = 40;
+    size_t draw_lines = 10;
     void *draw_buf1 = heap_caps_malloc(LCD_H_RES * draw_lines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     // void *draw_buf2 = NULL; // Disabled to save 43KB of internal RAM
 
-    void *draw_buf2 = heap_caps_malloc(LCD_H_RES * draw_lines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if (!draw_buf1 || !draw_buf2) { ESP_LOGE(TAG, "OOM internal draw buffer"); return ESP_ERR_NO_MEM; }
+    // void *draw_buf2 = heap_caps_malloc(LCD_H_RES * draw_lines * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    // if (!draw_buf1 || !draw_buf2) { ESP_LOGE(TAG, "OOM internal draw buffer"); return ESP_ERR_NO_MEM; }
 
-    lv_disp_draw_buf_init(&s_draw_buf, draw_buf1, draw_buf2, LCD_H_RES * draw_lines);
+    if (!draw_buf1) { ESP_LOGE(TAG, "OOM internal draw buffer"); return ESP_ERR_NO_MEM; }
+    lv_disp_draw_buf_init(&s_draw_buf, draw_buf1, NULL, LCD_H_RES * draw_lines);
+
+    // lv_disp_draw_buf_init(&s_draw_buf, draw_buf1, draw_buf2, LCD_H_RES * draw_lines);
 
 
     lv_disp_drv_init(&s_disp_drv);
