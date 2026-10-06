@@ -359,9 +359,6 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
     /* Drain any old vsync signals */
     xSemaphoreTake(s_vsync_sem, 0);
 
-    /* Wait for VBLANK so PPA copy doesn't collide with panel scan-out (fixes cyan flicker) */
-    // xSemaphoreTake(s_vsync_sem, pdMS_TO_TICKS(100));
-
     /* Issue the PPA (DMA2D) partial copy */
     esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
 

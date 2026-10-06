@@ -35,10 +35,13 @@
 
 #if CONFIG_ESP_HOSTED_USE_MEMPOOL
 
-#define OS_INIT_CRITICAL(mp) (mp->mutex = xSemaphoreCreateMutex())
-#define OS_DEINIT_CRITICAL(mp) (vSemaphoreDelete(mp->mutex))
-#define OS_ENTER_CRITICAL(mp) (xSemaphoreTake((mp->mutex), portMAX_DELAY))
-#define OS_EXIT_CRITICAL(mp) (xSemaphoreGive((mp->mutex)))
+#define OS_INIT_CRITICAL(mp) do {} while(0)
+#define OS_DEINIT_CRITICAL(mp) do {} while(0)
+
+static portMUX_TYPE s_mp_mux = portMUX_INITIALIZER_UNLOCKED;
+#define OS_ENTER_CRITICAL(mp) taskENTER_CRITICAL(&s_mp_mux)
+#define OS_EXIT_CRITICAL(mp)  taskEXIT_CRITICAL(&s_mp_mux)
+
 
 #define OS_MEM_TRUE_BLOCK_SIZE(bsize)   OS_ALIGN(bsize, OS_ALIGNMENT)
 #if MYNEWT_VAL(OS_MEMPOOL_GUARD)

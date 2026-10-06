@@ -313,6 +313,9 @@ static void hub_sensor_task(void *arg)
 
 esp_err_t hub_sensor_init(void)
 {
+    // Temporarily disabled for testing
+    // return ESP_OK;
+
     if (s_state.initialized) {
         return ESP_OK;
     }
@@ -324,7 +327,7 @@ esp_err_t hub_sensor_init(void)
                                 HUB_SENSOR_TASK_STACK,
                                 NULL,
                                 HUB_SENSOR_TASK_PRIORITY,
-                                &s_task_handle, 1) != pdPASS) {
+                                &s_task_handle, 0) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create hub sensor task");
         return ESP_FAIL;
     }
