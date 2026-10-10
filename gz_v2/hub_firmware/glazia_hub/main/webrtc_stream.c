@@ -394,8 +394,9 @@ static void start_abort(void)
     s_connected = false;
 
     /* Let the loop task (if it was spawned) exit before destroying the peer. */
-    for (int i = 0; i < 50 && (s_loop_task || s_video_task); ++i)
+    while (s_loop_task || s_video_task) {
         vTaskDelay(pdMS_TO_TICKS(20));
+    }
 
     esp_peer_handle_t peer = s_peer;
     s_peer = NULL;
@@ -626,8 +627,9 @@ void webrtc_stream_stop(void)
     }
 
     /* Let the video + loop tasks exit before destroying what they touch. */
-    for (int i = 0; i < 50 && (s_loop_task || s_video_task); ++i)
+    while (s_loop_task || s_video_task) {
         vTaskDelay(pdMS_TO_TICKS(20));
+    }
     vTaskDelay(pdMS_TO_TICKS(50));
 
     esp_peer_handle_t peer = s_peer;
