@@ -1,5 +1,4 @@
 # Native LVGL UI sources (ported from the ex-S3 display coprocessor).
-file(GLOB UI_SRCS "ui/*.c")
 
 idf_component_register(
     SRCS
@@ -22,11 +21,10 @@ idf_component_register(
         "nrf_thread.c"
         # Native MIPI-DSI (ILI9881C + GT911) display: LVGL renderer + shared
         # LDO/I2C owner. Replaces the old display_uart.c UART bridge to the S3.
-        "display.c"
+        "display_shim.c"
         "display_power.c"
-        ${UI_SRCS}
         "freertos_p4_tcm_fix.c"
-    INCLUDE_DIRS "." "ui"
+    INCLUDE_DIRS "." 
     REQUIRES
         nvs_flash
         esp_wifi_remote
@@ -55,12 +53,6 @@ idf_component_register(
         esp_h264
         esp_peer
         # Native MIPI-DSI display + capacitive touch (LVGL rendered on the P4).
-        esp_lcd
-        esp_lcd_touch
-        esp_lcd_touch_gt911
-        esp_lcd_ili9881c
-        esp_lvgl_port
-        lvgl
 )
 
 # IDF 5.3 P4 TCM bug: redirect stack/TCB validation to also accept TCM addresses.

@@ -299,6 +299,8 @@ bool wifi_resume_from_offline_mode(void)
     if (!(bits & WIFI_CONNECTED_BIT)) {
         ESP_LOGE(TAG, "WiFi resume timed out");
         s_offline_mode = true;
+        esp_wifi_disconnect();
+        esp_wifi_stop();
         return false;
     }
 

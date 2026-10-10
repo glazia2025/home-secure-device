@@ -17,7 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
-#include "ui/screens.h"
+
 
 static const char *TAG = "MAIN";
 
@@ -80,7 +80,6 @@ void app_main(void) {
      * while only app_main is running.  No other task is doing Flash access
      * yet, so the shared L2 cache (Flash XIP + PSRAM) is stable and the
      * memcpy cannot race with a cache suspension from another task. */
-    ui_preload_bg_image();
 
     /* The P4 has no native Wi-Fi/BT radio (both live on the ESP-Hosted C6), so
      * ESP_MAC_WIFI_STA is not available here and fails. Use the P4's efuse base

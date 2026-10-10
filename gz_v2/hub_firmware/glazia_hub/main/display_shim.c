@@ -98,25 +98,34 @@ static void uart_rx_task(void *arg) {
                         // Actually, ble_start() doesn't block and is safe to call from here.
                         ble_start();
                     } else if (strcmp(event->valuestring, "critical_toggle") == 0) {
-                        auth_arg_t *req = malloc(sizeof(auth_arg_t));
-                        if (req) {
-                            req->action = AUTH_ACTION_HUB_TOGGLE;
-                            req->want_on = (g_mode == MODE_OFFLINE);
-                            xTaskCreate(auth_task, "disp_auth", 6144, req, 5, NULL);
+                        if (!s_auth_busy) {
+                            s_auth_busy = true;
+                            auth_arg_t *req = malloc(sizeof(auth_arg_t));
+                            if (req) {
+                                req->action = AUTH_ACTION_HUB_TOGGLE;
+                                req->want_on = (g_mode == MODE_OFFLINE);
+                                xTaskCreate(auth_task, "disp_auth", 6144, req, 5, NULL);
+                            } else s_auth_busy = false;
                         }
                     } else if (strcmp(event->valuestring, "add_fingerprint") == 0) {
-                        auth_arg_t *req = malloc(sizeof(auth_arg_t));
-                        if (req) {
-                            req->action = AUTH_ACTION_ADD_FINGERPRINT;
-                            req->want_on = true;
-                            xTaskCreate(auth_task, "disp_auth", 6144, req, 5, NULL);
+                        if (!s_auth_busy) {
+                            s_auth_busy = true;
+                            auth_arg_t *req = malloc(sizeof(auth_arg_t));
+                            if (req) {
+                                req->action = AUTH_ACTION_ADD_FINGERPRINT;
+                                req->want_on = true;
+                                xTaskCreate(auth_task, "disp_auth", 6144, req, 5, NULL);
+                            } else s_auth_busy = false;
                         }
                     } else if (strcmp(event->valuestring, "add_sensor_auth") == 0) {
-                        auth_arg_t *req = malloc(sizeof(auth_arg_t));
-                        if (req) {
-                            req->action = AUTH_ACTION_ADD_SENSOR;
-                            req->want_on = true;
-                            xTaskCreate(auth_task, "disp_auth", 6144, req, 5, NULL);
+                        if (!s_auth_busy) {
+                            s_auth_busy = true;
+                            auth_arg_t *req = malloc(sizeof(auth_arg_t));
+                            if (req) {
+                                req->action = AUTH_ACTION_ADD_SENSOR;
+                                req->want_on = true;
+                                xTaskCreate(auth_task, "disp_auth", 6144, req, 5, NULL);
+                            } else s_auth_busy = false;
                         }
                     }
                 }

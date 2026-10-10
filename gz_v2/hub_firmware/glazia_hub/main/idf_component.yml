@@ -40,7 +40,3 @@ dependencies:
   ##    LVGL pinned to the 8.x line — the ported UI uses the LVGL v8 API.
   ##  - esp_lcd_ili9881c: MIPI-DSI DPI panel vendor driver for the Waveshare panel.
   ##  - esp_lcd_touch_gt911: GT911 I2C capacitive touch (polling; INT not routed).
-  lvgl/lvgl: '^8.3.0'
-  espressif/esp_lvgl_port: '^2.0.0'
-  waveshare/esp_lcd_ili9881c: '*'
-  espressif/esp_lcd_touch_gt911: '*'
